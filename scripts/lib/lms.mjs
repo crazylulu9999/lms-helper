@@ -13,6 +13,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
+import { emitKeypressEvents } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 // --- tiny ANSI helpers (no dependency) ---
@@ -242,10 +243,109 @@ export async function confirm(question) {
   }
 }
 
-/** Numbered picker. Returns the chosen item, or null if cancelled. */
+/**
+ * Arrow-key selector rendered on stderr (requires a TTY).
+ * - multi=true  → array of chosen items ([] if confirmed with none), or null on cancel.
+ * - multi=false → the chosen item, or null on cancel.
+ * Controls: ↑/↓ (or k/j) move · space toggle (multi) · a toggle-all (multi) · enter confirm · esc/Ctrl-C cancel.
+ */
+export function interactiveSelect({
+  items,
+  render,
+  message,
+  multi,
+  input = process.stdin,
+  output = process.stderr,
+}) {
+  return new Promise((resolve) => {
+    const out = output;
+    const stdin = input;
+    const selected = new Set();
+    let index = 0;
+    let top = 0;
+    let lastLines = 0;
+
+    const pageSize = () => Math.max(3, (out.rows || 24) - 4);
+
+    const draw = () => {
+      const page = pageSize();
+      if (index < top) top = index;
+      else if (index >= top + page) top = index - page + 1;
+      const end = Math.min(items.length, top + page);
+
+      const lines = [message];
+      if (top > 0) lines.push(c.dim("   ↑ more"));
+      for (let i = top; i < end; i++) {
+        const pointer = i === index ? c.cyan("❯") : " ";
+        const box = multi ? (selected.has(i) ? c.green("◉ ") : "◯ ") : "";
+        lines.push(`${pointer} ${box}${render(items[i])}`);
+      }
+      if (end < items.length) lines.push(c.dim("   ↓ more"));
+      lines.push(
+        c.dim(
+          multi
+            ? "↑/↓ move · space toggle · a all · enter confirm · esc cancel"
+            : "↑/↓ move · enter select · esc cancel",
+        ),
+      );
+
+      let s = lastLines > 0 ? `\x1b[${lastLines}A` : "";
+      s += `\x1b[0J${lines.join("\n")}\n`;
+      out.write(s);
+      lastLines = lines.length;
+    };
+
+    const wasRaw = Boolean(stdin.isRaw);
+    const cleanup = () => {
+      stdin.removeListener("keypress", onKey);
+      if (stdin.setRawMode) stdin.setRawMode(wasRaw);
+      stdin.pause();
+      out.write("\x1b[?25h"); // show cursor
+    };
+
+    const onKey = (str, key = {}) => {
+      const isSpace = key.name === "space" || str === " ";
+      if ((key.ctrl && key.name === "c") || key.name === "escape") {
+        cleanup();
+        resolve(null);
+        return;
+      }
+      if (key.name === "up" || key.name === "k") index = (index - 1 + items.length) % items.length;
+      else if (key.name === "down" || key.name === "j") index = (index + 1) % items.length;
+      else if (multi && isSpace) selected.has(index) ? selected.delete(index) : selected.add(index);
+      else if (multi && key.name === "a") {
+        if (selected.size === items.length) selected.clear();
+        else for (let i = 0; i < items.length; i++) selected.add(i);
+      } else if (key.name === "return") {
+        cleanup();
+        if (multi) resolve([...selected].sort((a, b) => a - b).map((i) => items[i]));
+        else resolve(items[index]);
+        return;
+      }
+      draw();
+    };
+
+    emitKeypressEvents(stdin);
+    if (stdin.setRawMode) stdin.setRawMode(true);
+    stdin.resume();
+    out.write("\x1b[?25l"); // hide cursor
+    stdin.on("keypress", onKey);
+    draw();
+  });
+}
+
+/** Single-select picker: arrow-key UI on a TTY, numbered prompt otherwise. */
 export async function pick(items, render, message) {
   if (items.length === 0) return null;
   if (items.length === 1) return items[0];
+  if (process.stdin.isTTY && process.stderr.isTTY) {
+    return interactiveSelect({ items, render, message, multi: false });
+  }
+  return pickNumbered(items, render, message);
+}
+
+/** Numbered single-select fallback (used when stdin isn't a TTY). */
+async function pickNumbered(items, render, message) {
   process.stderr.write(`\n${message}\n`);
   items.forEach((it, i) =>
     process.stderr.write(`  ${c.yellow(String(i + 1).padStart(2))}. ${render(it)}\n`),
@@ -420,9 +520,18 @@ export function ymd(d) {
   return d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : "—";
 }
 
-/** Multi-select numbered picker. Returns an array of chosen items (possibly empty). */
+/** Multi-select picker: arrow-key checkbox UI on a TTY, numbered prompt otherwise. */
 export async function pickMany(items, render, message) {
   if (items.length === 0) return [];
+  if (process.stdin.isTTY && process.stderr.isTTY) {
+    const res = await interactiveSelect({ items, render, message, multi: true });
+    return res === null ? [] : res; // cancel and "confirmed none" both mean nothing to do
+  }
+  return pickManyNumbered(items, render, message);
+}
+
+/** Numbered multi-select fallback (used when stdin isn't a TTY). */
+async function pickManyNumbered(items, render, message) {
   process.stderr.write(`\n${message}\n`);
   items.forEach((it, i) =>
     process.stderr.write(`  ${c.yellow(String(i + 1).padStart(2))}. ${render(it)}\n`),

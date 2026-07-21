@@ -34,10 +34,11 @@ pnpm model:outdated -i           # interactive: pick outdated models and re-down
 pnpm model:outdated --json       # machine-readable
 ```
 
-**Interactive update (`-i`)** lists the models with an update, lets you multi-select
-(`1 3 5`, `a` for all, Enter to cancel), then deletes and re-downloads each — unloading
-any that are loaded and fetching the same quant non-interactively. Add `-y` to skip the
-final confirmation.
+**Interactive update (`-i`)** lists the models with an update as an arrow-key checkbox
+list — **↑/↓** to move, **space** to toggle, **a** to toggle all, **enter** to confirm,
+**esc** to cancel — then deletes and re-downloads each selected model, unloading any that
+are loaded and fetching the same quant non-interactively. Add `-y` to skip the final
+confirmation. (When stdin isn't a TTY, it falls back to numbered input.)
 
 ```text
   ⬆ update      gemma-4-26b-a4b-it@q4_k_m Q4_K_M   local 2026-04-10 → HF 2026-07-17
