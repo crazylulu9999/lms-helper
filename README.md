@@ -49,10 +49,16 @@ final confirmation.
 
 The check is repo-level (any file change bumps `lastModified`). Models whose path is a
 LM Studio catalog alias, or a gated repo (Google/Nvidia return HTTP 401 without HF auth),
-show as `unknown`. Set `$HF_TOKEN` to check gated repos:
+show as `unknown`. Set a Hugging Face read token to check gated repos — either export it,
+or drop it in a `.env` (auto-loaded, gitignored):
 
 ```bash
+# option A — shell
 export HF_TOKEN=hf_xxx        # a read token from https://huggingface.co/settings/tokens
+
+# option B — .env (auto-loaded on every run)
+cp .env.example .env          # then set HF_TOKEN=hf_xxx inside
+
 pnpm model:outdated
 ```
 
@@ -108,5 +114,8 @@ pulled. It keeps sibling files (config / mmproj / other quants) intact.
 - `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) — Hugging Face read token, used by
   `model:outdated` to check gated repos. Never committed (`.env` is gitignored).
 - `NO_COLOR` — disable colored output.
+
+A `.env` file in the project root is auto-loaded on every run (see `.env.example`).
+Values already set in your shell take precedence; override the path with `$DOTENV_PATH`.
 
 Requires Node 18+ (uses `node:readline/promises`).

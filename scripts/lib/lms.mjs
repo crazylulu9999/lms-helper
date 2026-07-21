@@ -13,6 +13,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 
 // --- tiny ANSI helpers (no dependency) ---
 const useColor = process.stderr.isTTY && !process.env.NO_COLOR;
@@ -25,6 +26,47 @@ export const c = {
   yellow: paint(93),
   cyan: paint(96),
 };
+
+// --- .env auto-loading (zero-dependency) ---
+/** Absolute path to the project root (two levels up from scripts/lib). */
+function projectRoot() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+/**
+ * Load KEY=VALUE pairs from a .env file into process.env WITHOUT overriding variables
+ * that are already set (real env always wins). Supports blank lines, `#` comments,
+ * `export ` prefixes, and single/double-quoted values. Silently no-ops if absent.
+ *
+ * @param file Optional explicit path; defaults to $DOTENV_PATH or <projectRoot>/.env.
+ */
+export function loadDotEnv(file) {
+  const envPath = file || process.env.DOTENV_PATH || path.join(projectRoot(), ".env");
+  let content;
+  try {
+    content = fs.readFileSync(envPath, "utf8");
+  } catch {
+    return; // no .env — nothing to do
+  }
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const body = line.startsWith("export ") ? line.slice(7).trimStart() : line;
+    const eq = body.indexOf("=");
+    if (eq <= 0) continue;
+    const key = body.slice(0, eq).trim();
+    if (!key) continue;
+    let value = body.slice(eq + 1).trim();
+    const q = value[0];
+    if (value.length >= 2 && (q === '"' || q === "'") && value.at(-1) === q) {
+      value = value.slice(1, -1);
+    }
+    if (!(key in process.env)) process.env[key] = value;
+  }
+}
+
+// Auto-load .env on import so every helper script picks up local config (e.g. HF_TOKEN).
+loadDotEnv();
 
 // --- LM Studio paths ---
 export function lmstudioHome() {
