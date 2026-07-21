@@ -42,15 +42,17 @@ final confirmation.
 ```text
   ⬆ update      gemma-4-26b-a4b-it@q4_k_m Q4_K_M   local 2026-04-10 → HF 2026-07-17
   ✓ up-to-date  gemma-4-26b-a4b-it@q4_k_xl Q4_K_XL   local 2026-07-21 → HF 2026-07-17
-  ? unknown     google/gemma-4-31b-qat Q4_0   local — → HF —  (gated — needs HF login)
+  ? unknown     llama-guard-3-8b-mlx 4bit   local 2026-04-10 → HF —  (imported locally (not on HF))
 
-  14 update(s) available · 8 up-to-date · 6 unknown
+  16 update(s) available · 11 up-to-date · 1 unknown
 ```
 
-The check is repo-level (any file change bumps `lastModified`). Models whose path is a
-LM Studio catalog alias, or a gated repo (Google/Nvidia return HTTP 401 without HF auth),
-show as `unknown`. Set a Hugging Face read token to check gated repos — either export it,
-or drop it in a `.env` (auto-loaded, gitignored):
+The check is repo-level (any file change bumps `lastModified`). **Hub-aliased** models
+(e.g. `google/gemma-4-31b-qat` → `lmstudio-community/gemma-4-31B-it-QAT-GGUF`) and **bundled**
+models are resolved to their real underlying repo via LM Studio's model-index cache. What
+still shows `unknown`: models you imported/created locally (no HF repo — e.g. a self-converted
+MLX), and — without a token — gated repos. Set a Hugging Face read token to check gated repos —
+either export it, or drop it in a `.env` (auto-loaded, gitignored):
 
 ```bash
 # option A — shell

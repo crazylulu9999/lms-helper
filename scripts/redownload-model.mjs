@@ -5,14 +5,17 @@
 // from Hugging Face. `lms get` on its own SKIPS an already-present variant
 // ("Model already downloaded") even when the upstream repo has newer files, so an
 // in-place update is impossible (lms issue #579). Deleting first makes the fresh
-// pull actually happen.
+// pull actually happen. Hub-aliased models (e.g. "google/gemma-4-31b-qat") are
+// resolved to their real underlying repo via the model-index cache.
 
 import {
-  absPathOf,
   c,
   confirm,
+  enrichModel,
   formatBytes,
+  hfRepoFromPath,
   listDownloadedLocal,
+  loadModelIndex,
   loadedBlockers,
   modelsFolder,
   parseArgs,
@@ -58,28 +61,35 @@ async function main() {
   }
 
   const folder = modelsFolder();
-  const absPath = absPathOf(target, folder);
-  if (!pathIsAtOrInside(folder, absPath)) {
-    console.error(c.red(`Refusing to touch a path outside the models folder:\n  ${absPath}`));
-    process.exitCode = 1;
-    return;
-  }
+  const index = loadModelIndex();
+  const { fileAbsPath, repoRelPath, sourceType } = enrichModel(target, folder, index);
 
-  // Derive the Hugging Face repo from the on-disk path (for display / early error).
-  const segs = target.path.split(/[\\/]/).filter(Boolean);
-  if (segs.length < 2) {
-    console.error(c.red(`Can't derive a Hugging Face repo from path "${target.path}".`));
+  if (!pathIsAtOrInside(folder, fileAbsPath)) {
     console.error(
-      `Re-download manually, e.g.: ${c.yellow('lms get "https://huggingface.co/<pub>/<repo>" --select')}`,
+      c.red(
+        sourceType === "bundled"
+          ? `"${target.modelKey}" is a bundled model and can't be re-downloaded.`
+          : `Refusing to touch a path outside the models folder:\n  ${fileAbsPath}`,
+      ),
     );
     process.exitCode = 1;
     return;
   }
-  const repoUrl = `https://huggingface.co/${segs[0]}/${segs[1]}`;
+
+  const repo = hfRepoFromPath(repoRelPath);
+  if (!repo) {
+    console.error(c.red(`Can't derive a Hugging Face repo for "${target.modelKey}".`));
+    if (sourceType === "user") {
+      console.error(c.dim("This looks like a locally imported/created model — nothing to pull from HF."));
+    }
+    process.exitCode = 1;
+    return;
+  }
+  const repoUrl = `https://huggingface.co/${repo.owner}/${repo.name}`;
   const quant = target.quantization?.name?.toLowerCase();
 
   // Friendly loaded-model guard: refuse early unless --unload (redownloadModel does the actual unload).
-  const blockers = loadedBlockers(absPath, folder);
+  const blockers = loadedBlockers(fileAbsPath, folder);
   if (blockers.length > 0 && !flags.unload) {
     console.error(c.red("This model is currently loaded:"));
     for (const b of blockers) console.error(`  ${c.yellow(b.identifier)}`);
@@ -91,7 +101,7 @@ async function main() {
   console.error(
     `\n${c.bold("Re-download:")} ${c.cyan(target.modelKey)}` + (quant ? ` ${c.dim(quant.toUpperCase())}` : ""),
   );
-  console.error(`${c.dim("Delete:  ")} ${absPath} ${c.dim(`(${formatBytes(target.sizeBytes)})`)}`);
+  console.error(`${c.dim("Delete:  ")} ${fileAbsPath} ${c.dim(`(${formatBytes(target.sizeBytes)})`)}`);
   console.error(`${c.dim("Re-get:  ")} ${repoUrl}`);
 
   if (!wantsYes(flags)) {
@@ -100,10 +110,7 @@ async function main() {
       console.error(c.dim("Aborted. Nothing changed."));
       return;
     }
-  }
-
-  if (!wantsYes(flags) && quant) {
-    console.error(c.dim(`(In the variant list, choose: ${c.yellow(quant.toUpperCase())})`));
+    if (quant) console.error(c.dim(`(In the variant list, choose: ${c.yellow(quant.toUpperCase())})`));
   }
   console.error(c.dim("\nStarting `lms get` …"));
 
@@ -111,6 +118,7 @@ async function main() {
     yes: wantsYes(flags),
     unload: Boolean(flags.unload),
     keepPartials: Boolean(flags["keep-partials"]),
+    index,
   });
 
   if (res.ok) {

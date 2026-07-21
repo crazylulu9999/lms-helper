@@ -7,14 +7,15 @@
 // or tokenizer, which `lms get` will NOT pull on its own (see model:redownload).
 
 import {
-  absPathOf,
   c,
   confirm,
+  enrichModel,
   formatBytes,
   hfLastModified,
-  hfRepoOf,
+  hfRepoFromPath,
   hfToken,
   listDownloadedLocal,
+  loadModelIndex,
   localMTime,
   modelsFolder,
   parseArgs,
@@ -72,14 +73,17 @@ async function main() {
     return;
   }
   const folder = modelsFolder();
+  const index = loadModelIndex();
 
   // One HF request per unique repo (variants of the same model share a repo).
   const repoLookup = new Map(); // "owner/name" -> Promise<result>
 
   const rows = await Promise.all(
     models.map(async (model) => {
-      const repo = hfRepoOf(model);
-      const local = await localMTime(absPathOf(model, folder));
+      // Consult the model-index cache so Hub aliases / bundled models resolve to real paths.
+      const { fileAbsPath, repoRelPath, sourceType } = enrichModel(model, folder, index);
+      const repo = hfRepoFromPath(repoRelPath);
+      const local = await localMTime(fileAbsPath);
       let status = "unknown";
       let remote = null;
       let note = "";
@@ -91,18 +95,15 @@ async function main() {
         if (!repoLookup.has(key)) repoLookup.set(key, hfLastModified(repo.owner, repo.name));
         const r = await repoLookup.get(key);
         if (!r.ok) {
-          if (r.status === 404) note = "not on HF (alias?)";
-          else if (r.status === 401 || r.status === 403) note = "gated — needs HF login";
+          if (r.status === 404) note = sourceType === "user" ? "imported locally (not on HF)" : "not on HF";
+          else if (r.status === 401 || r.status === 403) note = "gated — set $HF_TOKEN";
           else note = `HF ${r.status || r.error || "error"}`;
         } else if (!r.lastModified) {
           note = "no lastModified";
         } else {
           remote = r.lastModified;
-          if (!local) {
-            note = "local file missing";
-          } else {
-            status = remote.getTime() > local.getTime() ? "update" : "ok";
-          }
+          if (!local) note = "local file missing";
+          else status = remote.getTime() > local.getTime() ? "update" : "ok";
         }
       }
 
@@ -113,6 +114,7 @@ async function main() {
         remote,
         status,
         note,
+        sourceType,
       };
     }),
   );
@@ -124,6 +126,7 @@ async function main() {
           modelKey: r.model.modelKey,
           quant: r.model.quantization?.name || null,
           repo: r.repo,
+          source: r.sourceType || undefined,
           localDate: ymd(r.local),
           remoteDate: ymd(r.remote),
           status: r.status,
@@ -180,7 +183,7 @@ async function main() {
       console.error(
         `\n${c.bold("──")} ${c.cyan(m.modelKey)}${m.quantization?.name ? ` ${c.dim(m.quantization.name)}` : ""}`,
       );
-      const res = await redownloadModel(m, folder, { yes: true, unload: true, keepPartials: false });
+      const res = await redownloadModel(m, folder, { yes: true, unload: true, keepPartials: false, index });
       if (res.ok) {
         done++;
         console.error(c.green(`✓ ${m.modelKey} updated.`));

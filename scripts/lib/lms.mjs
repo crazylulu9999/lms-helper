@@ -285,13 +285,77 @@ export function loadedBlockers(targetAbsPath, folder) {
 }
 
 // --- update checking (Hugging Face repo lastModified vs local file mtime) ---
-/** Derive the Hugging Face repo ({owner, name}) from a model's on-disk path, or null. */
-export function hfRepoOf(model) {
-  const segs = String(model.path || "")
+/** Split a repo-relative path into a Hugging Face { owner, name }, or null. */
+export function hfRepoFromPath(relPath) {
+  const segs = String(relPath || "")
     .split(/[\\/]/)
     .filter(Boolean);
   if (segs.length < 2) return null;
   return { owner: segs[0], name: segs[1] };
+}
+
+/** Derive the Hugging Face repo ({owner, name}) from a model's on-disk path, or null. */
+export function hfRepoOf(model) {
+  return hfRepoFromPath(model?.path);
+}
+
+/**
+ * Read LM Studio's internal model-index cache to recover the REAL on-disk location and
+ * source repo for models addressed by a Hub/catalog alias (e.g. "google/gemma-4-31b-qat"
+ * → "lmstudio-community/gemma-4-31B-it-QAT-GGUF") or stored as bundled models. Best-effort:
+ * returns an empty Map if the cache is missing/unparseable (its format is internal to LM
+ * Studio and may change between versions).
+ *
+ * @returns Map keyed by a model's `path` (== the cache's `containingDirSubpath`).
+ */
+export function loadModelIndex() {
+  const map = new Map();
+  const file = path.join(lmstudioHome(), ".internal", "model-index-cache.json");
+  let json;
+  try {
+    json = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return map;
+  }
+  const models = Array.isArray(json?.models) ? json.models : [];
+  // Keep the most informative record when several cache entries share a key (LM Studio
+  // can hold multiple entries per subpath, some lacking the real Hub→repo mapping).
+  const put = (key, rec) => {
+    if (!key) return;
+    const prev = map.get(key);
+    if (!prev || rec.score > prev.score) map.set(key, rec);
+  };
+  for (const e of models) {
+    const id = typeof e.indexedModelIdentifier === "string" ? e.indexedModelIdentifier : "";
+    const atSuffix = id.includes("@") ? id.slice(id.indexOf("@") + 1) : null;
+    const fileAbsPath = e.entryPoint?.absPath || e.concreteModelDirAbsolutePath || null;
+    const repoRelPath = e.entryPoint?.relPath || atSuffix || null;
+    const rec = {
+      fileAbsPath,
+      repoRelPath,
+      sourceType: e.sourceDirectoryType || null,
+      score: (fileAbsPath ? 1 : 0) + (repoRelPath ? 2 : 0),
+    };
+    // Key by directory subpath (matches Hub-style `path`) and, when known, by the concrete
+    // file relPath (matches file-style `path`, e.g. bundled models).
+    put(e.containingDirSubpath, rec);
+    if (e.entryPoint?.relPath) put(e.entryPoint.relPath, rec);
+  }
+  return map;
+}
+
+/**
+ * Resolve a model's effective delete target, HF repo path, and source type — consulting the
+ * model-index cache so Hub-aliased and bundled models map to their real underlying files.
+ * Falls back to the model's own `path` when the cache has no entry.
+ */
+export function enrichModel(model, folder, index) {
+  const e = index?.get(model.path);
+  return {
+    fileAbsPath: e?.fileAbsPath || absPathOf(model, folder),
+    repoRelPath: e?.repoRelPath || model.path,
+    sourceType: e?.sourceType || null,
+  };
 }
 
 /** A Hugging Face access token from the environment, if set (used for gated repos). */
@@ -393,21 +457,23 @@ export async function pickMany(items, render, message) {
  *               keepPartials: skip cleaning leftover download partials.
  */
 export async function redownloadModel(model, folder, opts = {}) {
-  const { yes = false, unload = false, keepPartials = false } = opts;
-  const absPath = absPathOf(model, folder);
-  if (!pathIsAtOrInside(folder, absPath)) {
-    return { ok: false, reason: "path outside models folder" };
+  const { yes = false, unload = false, keepPartials = false, index } = opts;
+  const { fileAbsPath, repoRelPath, sourceType } = enrichModel(model, folder, index || loadModelIndex());
+
+  if (!pathIsAtOrInside(folder, fileAbsPath)) {
+    return {
+      ok: false,
+      reason: sourceType === "bundled" ? "bundled model — not re-downloadable" : "path outside models folder",
+    };
   }
-  const segs = String(model.path || "")
-    .split(/[\\/]/)
-    .filter(Boolean);
-  if (segs.length < 2) {
+  const repo = hfRepoFromPath(repoRelPath);
+  if (!repo) {
     return { ok: false, reason: "cannot derive Hugging Face repo from path" };
   }
-  const repoUrl = `https://huggingface.co/${segs[0]}/${segs[1]}`;
+  const repoUrl = `https://huggingface.co/${repo.owner}/${repo.name}`;
   const quant = model.quantization?.name?.toLowerCase();
 
-  const blockers = loadedBlockers(absPath, folder);
+  const blockers = loadedBlockers(fileAbsPath, folder);
   if (blockers.length > 0) {
     if (!unload) {
       return {
@@ -418,8 +484,8 @@ export async function redownloadModel(model, folder, opts = {}) {
     for (const b of blockers) lmsInteractive(["unload", b.identifier]);
   }
 
-  await fsp.rm(absPath, { recursive: true, force: true });
-  if (!keepPartials) await cleanPartials(absPath);
+  await fsp.rm(fileAbsPath, { recursive: true, force: true });
+  if (!keepPartials) await cleanPartials(fileAbsPath);
 
   let code;
   if (yes && quant) {
