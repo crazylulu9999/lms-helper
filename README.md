@@ -15,9 +15,35 @@ filesystem — no extra dependencies, nothing to install.
 
 ```bash
 pnpm model:ls                       # list models downloaded on THIS machine (size + path)
+pnpm model:outdated                 # list models whose upstream HF repo has newer files
 pnpm model:rm [modelKey]            # delete a downloaded model from disk
 pnpm model:redownload [modelKey]    # delete + re-download (force-update to the latest upstream files)
 ```
+
+### `model:outdated`
+
+Compares each downloaded model's Hugging Face repo `lastModified` against the local
+file's mtime; a newer HF timestamp means the upstream repo changed after you downloaded
+(re-quantized weights, chat template, or tokenizer) — updates `lms get` won't pull on its
+own. Pair it with `model:redownload` to actually update.
+
+```bash
+pnpm model:outdated              # all models, grouped by status (⬆ update / ✓ up-to-date / ? unknown)
+pnpm model:outdated -u           # only models with an update available
+pnpm model:outdated --json       # machine-readable
+```
+
+```text
+  ⬆ update      gemma-4-26b-a4b-it@q4_k_m Q4_K_M   local 2026-04-10 → HF 2026-07-17
+  ✓ up-to-date  gemma-4-26b-a4b-it@q4_k_xl Q4_K_XL   local 2026-07-21 → HF 2026-07-17
+  ? unknown     google/gemma-4-31b-qat Q4_0   local — → HF —  (gated — needs HF login)
+
+  14 update(s) available · 8 up-to-date · 6 unknown
+```
+
+The check is repo-level (any file change bumps `lastModified`). Models whose path is a
+LM Studio catalog alias, or a gated repo (Google/Nvidia return HTTP 401 without HF auth),
+show as `unknown`.
 
 Omit `modelKey` to pick interactively. Get a model's key from `pnpm model:ls` or `lms ls`.
 

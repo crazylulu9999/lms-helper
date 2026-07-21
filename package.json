@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "model:ls": "node scripts/list-models.mjs",
+    "model:outdated": "node scripts/outdated-models.mjs",
     "model:rm": "node scripts/remove-model.mjs",
     "model:redownload": "node scripts/redownload-model.mjs"
   },

@@ -241,3 +241,67 @@ export async function resolveTarget(key, models, action) {
 export function loadedBlockers(targetAbsPath, folder) {
   return listLoadedLocal().filter((m) => pathIsAtOrInside(targetAbsPath, absPathOf(m, folder)));
 }
+
+// --- update checking (Hugging Face repo lastModified vs local file mtime) ---
+/** Derive the Hugging Face repo ({owner, name}) from a model's on-disk path, or null. */
+export function hfRepoOf(model) {
+  const segs = String(model.path || "")
+    .split(/[\\/]/)
+    .filter(Boolean);
+  if (segs.length < 2) return null;
+  return { owner: segs[0], name: segs[1] };
+}
+
+/** Fetch a repo's `lastModified` timestamp from the public Hugging Face API. */
+export async function hfLastModified(owner, name) {
+  const url = `https://huggingface.co/api/models/${owner}/${name}`;
+  try {
+    const res = await fetch(url, { headers: { "user-agent": "lms-helper" } });
+    if (!res.ok) return { ok: false, status: res.status };
+    const json = await res.json();
+    return { ok: true, lastModified: json.lastModified ? new Date(json.lastModified) : null };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
+/** Newest mtime among the files that make up a downloaded model (single file or folder path). */
+export async function localMTime(absolutePath) {
+  let st;
+  try {
+    st = await fsp.stat(absolutePath);
+  } catch {
+    return null;
+  }
+  if (st.isFile()) return st.mtime;
+  if (!st.isDirectory()) return null;
+  let newest = 0;
+  const walk = async (dir) => {
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(p);
+      } else {
+        try {
+          const s = await fsp.stat(p);
+          if (s.mtimeMs > newest) newest = s.mtimeMs;
+        } catch {
+          // ignore unreadable entries
+        }
+      }
+    }
+  };
+  await walk(absolutePath);
+  return newest ? new Date(newest) : null;
+}
+
+/** Format a Date as YYYY-MM-DD, or "—" when unavailable. */
+export function ymd(d) {
+  return d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : "—";
+}
