@@ -30,8 +30,14 @@ own. Pair it with `model:redownload` to actually update.
 ```bash
 pnpm model:outdated              # all models, grouped by status (⬆ update / ✓ up-to-date / ? unknown)
 pnpm model:outdated -u           # only models with an update available
+pnpm model:outdated -i           # interactive: pick outdated models and re-download them
 pnpm model:outdated --json       # machine-readable
 ```
+
+**Interactive update (`-i`)** lists the models with an update, lets you multi-select
+(`1 3 5`, `a` for all, Enter to cancel), then deletes and re-downloads each — unloading
+any that are loaded and fetching the same quant non-interactively. Add `-y` to skip the
+final confirmation.
 
 ```text
   ⬆ update      gemma-4-26b-a4b-it@q4_k_m Q4_K_M   local 2026-04-10 → HF 2026-07-17
@@ -43,7 +49,12 @@ pnpm model:outdated --json       # machine-readable
 
 The check is repo-level (any file change bumps `lastModified`). Models whose path is a
 LM Studio catalog alias, or a gated repo (Google/Nvidia return HTTP 401 without HF auth),
-show as `unknown`.
+show as `unknown`. Set `$HF_TOKEN` to check gated repos:
+
+```bash
+export HF_TOKEN=hf_xxx        # a read token from https://huggingface.co/settings/tokens
+pnpm model:outdated
+```
 
 Omit `modelKey` to pick interactively. Get a model's key from `pnpm model:ls` or `lms ls`.
 
@@ -94,6 +105,8 @@ pulled. It keeps sibling files (config / mmproj / other quants) intact.
 
 - `LMS_BIN` — path to the `lms` binary (default: `~/.lmstudio/bin/lms`, else `lms` on `PATH`).
 - `LMSTUDIO_HOME` — LM Studio home dir (default: `~/.lmstudio`).
+- `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) — Hugging Face read token, used by
+  `model:outdated` to check gated repos. Never committed (`.env` is gitignored).
 - `NO_COLOR` — disable colored output.
 
 Requires Node 18+ (uses `node:readline/promises`).

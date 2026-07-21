@@ -9,12 +9,18 @@
 import {
   absPathOf,
   c,
+  confirm,
+  formatBytes,
   hfLastModified,
   hfRepoOf,
+  hfToken,
   listDownloadedLocal,
   localMTime,
   modelsFolder,
   parseArgs,
+  pickMany,
+  redownloadModel,
+  wantsYes,
   ymd,
 } from "./lib/lms.mjs";
 
@@ -28,9 +34,14 @@ Usage:
   pnpm model:outdated [options]
 
 Options:
+  -i, --interactive    Pick models with an update and re-download them.
+  -y, --yes            With -i: skip the confirmation before re-downloading.
   -u, --updates-only   Show only models with an update available.
       --json           Machine-readable JSON output.
   -h, --help           Show this help.
+
+Auth: set $HF_TOKEN (or $HUGGING_FACE_HUB_TOKEN) to check gated repos (Google,
+Nvidia, …); without it they show as "unknown".
 
 Note: the check is repo-level (any file change bumps lastModified). Models whose
 path is not a Hugging Face repo (LM Studio catalog aliases) show as "unknown".`;
@@ -125,6 +136,66 @@ async function main() {
     return;
   }
 
+  // Interactive mode: pick from the models that have updates and re-download them.
+  if (flags.i || flags.interactive) {
+    const candidates = rows
+      .filter((r) => r.status === "update")
+      .sort((a, b) => (b.remote?.getTime() || 0) - (a.remote?.getTime() || 0))
+      .map((r) => r.model);
+    if (candidates.length === 0) {
+      console.error(c.green("\nAll models are up to date — nothing to re-download. 🎉"));
+      return;
+    }
+    const dateOf = (m) => {
+      const r = rows.find((x) => x.model === m);
+      return `${ymd(r.local)} → ${ymd(r.remote)}`;
+    };
+    const render = (m) =>
+      `${c.cyan(m.modelKey)}${m.quantization?.name ? ` ${c.dim(m.quantization.name)}` : ""}  ` +
+      `${c.dim(dateOf(m))}  ${c.dim(formatBytes(m.sizeBytes))}`;
+    const chosen = await pickMany(
+      candidates,
+      render,
+      `${c.bold("Select models to re-download")} ${c.dim("(delete local → fresh pull from Hugging Face)")}:`,
+    );
+    if (chosen.length === 0) {
+      console.error(c.dim("Cancelled. Nothing changed."));
+      return;
+    }
+    const total = chosen.reduce((s, m) => s + (m.sizeBytes || 0), 0);
+    console.error(
+      `\n${c.bold(`${chosen.length} model(s) selected`)} · ${formatBytes(total)} will be deleted and re-downloaded.`,
+    );
+    console.error(c.dim("Any that are currently loaded will be unloaded first."));
+    if (!wantsYes(flags)) {
+      const ok = await confirm(c.yellow("Proceed?"));
+      if (!ok) {
+        console.error(c.dim("Cancelled. Nothing changed."));
+        return;
+      }
+    }
+    let done = 0;
+    let failed = 0;
+    for (const m of chosen) {
+      console.error(
+        `\n${c.bold("──")} ${c.cyan(m.modelKey)}${m.quantization?.name ? ` ${c.dim(m.quantization.name)}` : ""}`,
+      );
+      const res = await redownloadModel(m, folder, { yes: true, unload: true, keepPartials: false });
+      if (res.ok) {
+        done++;
+        console.error(c.green(`✓ ${m.modelKey} updated.`));
+      } else {
+        failed++;
+        console.error(c.red(`✗ ${m.modelKey}: ${res.reason || `lms get exit ${res.code}`}`));
+      }
+    }
+    console.error(
+      `\n${c.green(`${done} updated`)}${failed ? ` · ${c.red(`${failed} failed`)}` : ""}.` +
+        (done ? ` Reload with ${c.yellow("lms load <modelKey>")}.` : ""),
+    );
+    return;
+  }
+
   const order = { update: 0, unknown: 1, ok: 2 };
   rows.sort(
     (a, b) =>
@@ -155,7 +226,17 @@ async function main() {
       `${c.dim(`${count("unknown")} unknown`)}`,
   );
   if (count("update") > 0) {
-    console.error(c.dim("Update one with: ") + c.yellow("pnpm model:redownload <modelKey>"));
+    console.error(
+      c.dim("Update interactively: ") +
+        c.yellow("pnpm model:outdated -i") +
+        c.dim("   ·   one model: ") +
+        c.yellow("pnpm model:redownload <modelKey>"),
+    );
+  }
+  if (count("unknown") > 0 && !hfToken()) {
+    console.error(
+      c.dim("Set ") + c.yellow("$HF_TOKEN") + c.dim(" to check gated repos (Google, Nvidia, …)."),
+    );
   }
 }
 

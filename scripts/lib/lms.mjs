@@ -252,11 +252,19 @@ export function hfRepoOf(model) {
   return { owner: segs[0], name: segs[1] };
 }
 
-/** Fetch a repo's `lastModified` timestamp from the public Hugging Face API. */
+/** A Hugging Face access token from the environment, if set (used for gated repos). */
+export function hfToken() {
+  return process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN || process.env.HF_API_TOKEN || "";
+}
+
+/** Fetch a repo's `lastModified` timestamp from the Hugging Face API (auth if $HF_TOKEN set). */
 export async function hfLastModified(owner, name) {
   const url = `https://huggingface.co/api/models/${owner}/${name}`;
+  const headers = { "user-agent": "lms-helper" };
+  const token = hfToken();
+  if (token) headers.authorization = `Bearer ${token}`;
   try {
-    const res = await fetch(url, { headers: { "user-agent": "lms-helper" } });
+    const res = await fetch(url, { headers });
     if (!res.ok) return { ok: false, status: res.status };
     const json = await res.json();
     return { ok: true, lastModified: json.lastModified ? new Date(json.lastModified) : null };
@@ -304,4 +312,79 @@ export async function localMTime(absolutePath) {
 /** Format a Date as YYYY-MM-DD, or "—" when unavailable. */
 export function ymd(d) {
   return d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : "—";
+}
+
+/** Multi-select numbered picker. Returns an array of chosen items (possibly empty). */
+export async function pickMany(items, render, message) {
+  if (items.length === 0) return [];
+  process.stderr.write(`\n${message}\n`);
+  items.forEach((it, i) =>
+    process.stderr.write(`  ${c.yellow(String(i + 1).padStart(2))}. ${render(it)}\n`),
+  );
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const ans = (
+      await rl.question(`\n${c.dim("번호 선택 (공백/쉼표 구분, 'a'=전체, 엔터=취소): ")}`)
+    ).trim();
+    if (!ans) return [];
+    if (/^(a|all|\*)$/i.test(ans)) return items.slice();
+    const seen = new Set();
+    return ans
+      .split(/[\s,]+/)
+      .map((x) => Number.parseInt(x, 10) - 1)
+      .filter((i) => Number.isInteger(i) && i >= 0 && i < items.length && !seen.has(i) && seen.add(i))
+      .map((i) => items[i]);
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Force-update one model: (optionally unload), delete its local variant + stale partials,
+ * then re-download from the full Hugging Face URL. Does NOT prompt — the caller is
+ * responsible for confirmation. Returns { ok, code?, reason?, repoUrl?, quant? }.
+ *
+ * @param model  A model object from listDownloadedLocal().
+ * @param folder The resolved models folder.
+ * @param opts   yes: try an exact-quant non-interactive fetch (falls back to --select);
+ *               unload: unload the model first if it is loaded;
+ *               keepPartials: skip cleaning leftover download partials.
+ */
+export async function redownloadModel(model, folder, opts = {}) {
+  const { yes = false, unload = false, keepPartials = false } = opts;
+  const absPath = absPathOf(model, folder);
+  if (!pathIsAtOrInside(folder, absPath)) {
+    return { ok: false, reason: "path outside models folder" };
+  }
+  const segs = String(model.path || "")
+    .split(/[\\/]/)
+    .filter(Boolean);
+  if (segs.length < 2) {
+    return { ok: false, reason: "cannot derive Hugging Face repo from path" };
+  }
+  const repoUrl = `https://huggingface.co/${segs[0]}/${segs[1]}`;
+  const quant = model.quantization?.name?.toLowerCase();
+
+  const blockers = loadedBlockers(absPath, folder);
+  if (blockers.length > 0) {
+    if (!unload) {
+      return {
+        ok: false,
+        reason: `loaded (${blockers.map((b) => b.identifier).join(", ")}) — unload first`,
+      };
+    }
+    for (const b of blockers) lmsInteractive(["unload", b.identifier]);
+  }
+
+  await fsp.rm(absPath, { recursive: true, force: true });
+  if (!keepPartials) await cleanPartials(absPath);
+
+  let code;
+  if (yes && quant) {
+    code = lmsInteractive(["get", `${repoUrl}@${quant}`, "-y"]);
+    if (code !== 0) code = lmsInteractive(["get", repoUrl, "--select"]);
+  } else {
+    code = lmsInteractive(["get", repoUrl, "--select"]);
+  }
+  return { ok: code === 0, code, repoUrl, quant };
 }
