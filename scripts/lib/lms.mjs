@@ -393,6 +393,8 @@ async function pickNumbered(items, render, message) {
     const idx = Number.parseInt(ans, 10) - 1;
     if (!Number.isInteger(idx) || idx < 0 || idx >= items.length) return null;
     return items[idx];
+  } catch {
+    return null; // e.g. EOF on redirected/closed stdin
   } finally {
     rl.close();
   }
@@ -602,6 +604,8 @@ async function pickManyNumbered(items, render, message) {
       .map((x) => Number.parseInt(x, 10) - 1)
       .filter((i) => Number.isInteger(i) && i >= 0 && i < items.length && !seen.has(i) && seen.add(i))
       .map((i) => items[i]);
+  } catch {
+    return []; // e.g. EOF on redirected/closed stdin
   } finally {
     rl.close();
   }
