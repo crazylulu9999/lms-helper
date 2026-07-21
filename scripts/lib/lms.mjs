@@ -247,40 +247,69 @@ export async function confirm(question) {
  * Arrow-key selector rendered on stderr (requires a TTY).
  * - multi=true  → array of chosen items ([] if confirmed with none), or null on cancel.
  * - multi=false → the chosen item, or null on cancel.
- * Controls: ↑/↓ (or k/j) move · space toggle (multi) · a toggle-all (multi) · enter confirm · esc/Ctrl-C cancel.
+ * Controls: ↑/↓ (or k/j) move · space toggle (multi) · a toggle-all (multi) ·
+ *           s cycle sort · r reverse sort (when `sorts` provided) · enter confirm · esc/Ctrl-C cancel.
+ *
+ * @param sorts Optional list of `{ label, cmp }` sort modes; `cmp` is an Array.sort comparator
+ *              (omit/null for the given order). Selection is tracked by item identity, so it
+ *              survives re-sorting.
  */
 export function interactiveSelect({
   items,
   render,
   message,
   multi,
+  sorts = [],
   input = process.stdin,
   output = process.stderr,
 }) {
   return new Promise((resolve) => {
     const out = output;
     const stdin = input;
-    const selected = new Set();
+    const selected = new Set(); // holds item references (survives re-sort)
+    let view = items.slice();
     let index = 0;
     let top = 0;
+    let sortIndex = 0;
+    let reversed = false;
     let lastLines = 0;
 
-    const pageSize = () => Math.max(3, (out.rows || 24) - 4);
+    const applySort = (preserveCursor = true) => {
+      const current = preserveCursor ? view[index] : null;
+      view = items.slice();
+      const cmp = sorts[sortIndex]?.cmp;
+      if (cmp) view.sort(cmp);
+      if (reversed) view.reverse();
+      const at = current ? view.indexOf(current) : -1;
+      index = at >= 0 ? at : 0; // keep cursor on the same item across a re-sort; start at top on init
+      top = 0;
+    };
+    if (sorts.length) applySort(false);
+
+    const pageSize = () => Math.max(3, (out.rows || 24) - (sorts.length ? 6 : 5));
 
     const draw = () => {
       const page = pageSize();
       if (index < top) top = index;
       else if (index >= top + page) top = index - page + 1;
-      const end = Math.min(items.length, top + page);
+      const end = Math.min(view.length, top + page);
 
       const lines = [message];
       if (top > 0) lines.push(c.dim("   ↑ more"));
       for (let i = top; i < end; i++) {
+        const item = view[i];
         const pointer = i === index ? c.cyan("❯") : " ";
-        const box = multi ? (selected.has(i) ? c.green("◉ ") : "◯ ") : "";
-        lines.push(`${pointer} ${box}${render(items[i])}`);
+        const box = multi ? (selected.has(item) ? c.green("◉ ") : "◯ ") : "";
+        lines.push(`${pointer} ${box}${render(item)}`);
       }
-      if (end < items.length) lines.push(c.dim("   ↓ more"));
+      if (end < view.length) lines.push(c.dim("   ↓ more"));
+      if (sorts.length) {
+        lines.push(
+          c.dim(`sort: `) +
+            c.cyan(sorts[sortIndex].label) +
+            c.dim(`${reversed ? " ▲" : " ▼"}  (s: next · r: reverse)`),
+        );
+      }
       lines.push(
         c.dim(
           multi
@@ -310,16 +339,24 @@ export function interactiveSelect({
         resolve(null);
         return;
       }
-      if (key.name === "up" || key.name === "k") index = (index - 1 + items.length) % items.length;
-      else if (key.name === "down" || key.name === "j") index = (index + 1) % items.length;
-      else if (multi && isSpace) selected.has(index) ? selected.delete(index) : selected.add(index);
-      else if (multi && key.name === "a") {
-        if (selected.size === items.length) selected.clear();
-        else for (let i = 0; i < items.length; i++) selected.add(i);
+      if (key.name === "up" || key.name === "k") index = (index - 1 + view.length) % view.length;
+      else if (key.name === "down" || key.name === "j") index = (index + 1) % view.length;
+      else if (sorts.length && key.name === "s") {
+        sortIndex = (sortIndex + 1) % sorts.length;
+        applySort();
+      } else if (sorts.length && key.name === "r") {
+        reversed = !reversed;
+        applySort();
+      } else if (multi && isSpace) {
+        const it = view[index];
+        selected.has(it) ? selected.delete(it) : selected.add(it);
+      } else if (multi && key.name === "a") {
+        if (view.every((it) => selected.has(it))) view.forEach((it) => selected.delete(it));
+        else view.forEach((it) => selected.add(it));
       } else if (key.name === "return") {
         cleanup();
-        if (multi) resolve([...selected].sort((a, b) => a - b).map((i) => items[i]));
-        else resolve(items[index]);
+        if (multi) resolve(view.filter((it) => selected.has(it)));
+        else resolve(view[index]);
         return;
       }
       draw();
@@ -334,12 +371,12 @@ export function interactiveSelect({
   });
 }
 
-/** Single-select picker: arrow-key UI on a TTY, numbered prompt otherwise. */
-export async function pick(items, render, message) {
+/** Single-select picker: arrow-key UI on a TTY, numbered prompt otherwise. `opts.sorts` optional. */
+export async function pick(items, render, message, opts = {}) {
   if (items.length === 0) return null;
   if (items.length === 1) return items[0];
   if (process.stdin.isTTY && process.stderr.isTTY) {
-    return interactiveSelect({ items, render, message, multi: false });
+    return interactiveSelect({ items, render, message, multi: false, sorts: opts.sorts || [] });
   }
   return pickNumbered(items, render, message);
 }
@@ -374,9 +411,11 @@ export async function resolveTarget(key, models, action) {
       throw new Error(`No downloaded model matches "${key}".\nRun \`lms ls\` to see downloaded models.`);
     }
     if (matches.length === 1) return matches[0];
-    return pick(matches, describe, `"${key}" matches multiple variants — choose one to ${action}:`);
+    return pick(matches, describe, `"${key}" matches multiple variants — choose one to ${action}:`, {
+      sorts: modelSorts(),
+    });
   }
-  return pick(models, describe, `Select a model to ${action}:`);
+  return pick(models, describe, `Select a model to ${action}:`, { sorts: modelSorts() });
 }
 
 /** Loaded local models whose files sit at/inside the target path (these block deletion). */
@@ -520,14 +559,28 @@ export function ymd(d) {
   return d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : "—";
 }
 
-/** Multi-select picker: arrow-key checkbox UI on a TTY, numbered prompt otherwise. */
-export async function pickMany(items, render, message) {
+/** Multi-select picker: arrow-key checkbox UI on a TTY, numbered prompt otherwise. `opts.sorts` optional. */
+export async function pickMany(items, render, message, opts = {}) {
   if (items.length === 0) return [];
   if (process.stdin.isTTY && process.stderr.isTTY) {
-    const res = await interactiveSelect({ items, render, message, multi: true });
+    const res = await interactiveSelect({
+      items,
+      render,
+      message,
+      multi: true,
+      sorts: opts.sorts || [],
+    });
     return res === null ? [] : res; // cancel and "confirmed none" both mean nothing to do
   }
   return pickManyNumbered(items, render, message);
+}
+
+/** Sort modes for a list of model objects (by id / disk size). Pass to pick()/pickMany(). */
+export function modelSorts() {
+  return [
+    { label: "name", cmp: (a, b) => a.modelKey.localeCompare(b.modelKey) },
+    { label: "size", cmp: (a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0) },
+  ];
 }
 
 /** Numbered multi-select fallback (used when stdin isn't a TTY). */

@@ -36,6 +36,7 @@ Usage:
 
 Options:
   -i, --interactive    Pick models with an update and re-download them.
+                       (picker: ↑/↓ move · space toggle · a all · s sort · r reverse)
   -y, --yes            With -i: skip the confirmation before re-downloading.
   -u, --updates-only   Show only models with an update available.
       --json           Machine-readable JSON output.
@@ -149,17 +150,23 @@ async function main() {
       console.error(c.green("\nAll models are up to date — nothing to re-download. 🎉"));
       return;
     }
-    const dateOf = (m) => {
-      const r = rows.find((x) => x.model === m);
-      return `${ymd(r.local)} → ${ymd(r.remote)}`;
-    };
+    const rowOf = new Map(rows.map((r) => [r.model, r]));
+    const dateOf = (m) => `${ymd(rowOf.get(m)?.local)} → ${ymd(rowOf.get(m)?.remote)}`;
     const render = (m) =>
       `${c.cyan(m.modelKey)}${m.quantization?.name ? ` ${c.dim(m.quantization.name)}` : ""}  ` +
       `${c.dim(dateOf(m))}  ${c.dim(formatBytes(m.sizeBytes))}`;
+    // Sort modes cycled with `s` (reverse with `r`) inside the picker.
+    const sorts = [
+      { label: "update date", cmp: (a, b) => (rowOf.get(b)?.remote?.getTime() || 0) - (rowOf.get(a)?.remote?.getTime() || 0) },
+      { label: "name", cmp: (a, b) => a.modelKey.localeCompare(b.modelKey) },
+      { label: "size", cmp: (a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0) },
+      { label: "local age", cmp: (a, b) => (rowOf.get(a)?.local?.getTime() || 0) - (rowOf.get(b)?.local?.getTime() || 0) },
+    ];
     const chosen = await pickMany(
       candidates,
       render,
       `${c.bold("Select models to re-download")} ${c.dim("(delete local → fresh pull from Hugging Face)")}:`,
+      { sorts },
     );
     if (chosen.length === 0) {
       console.error(c.dim("Cancelled. Nothing changed."));

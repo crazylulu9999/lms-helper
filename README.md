@@ -35,10 +35,12 @@ pnpm model:outdated --json       # machine-readable
 ```
 
 **Interactive update (`-i`)** lists the models with an update as an arrow-key checkbox
-list — **↑/↓** to move, **space** to toggle, **a** to toggle all, **enter** to confirm,
-**esc** to cancel — then deletes and re-downloads each selected model, unloading any that
-are loaded and fetching the same quant non-interactively. Add `-y` to skip the final
-confirmation. (When stdin isn't a TTY, it falls back to numbered input.)
+list — **↑/↓** to move, **space** to toggle, **a** to toggle all, **s** to cycle sort
+(update date / name / size / local age), **r** to reverse, **enter** to confirm, **esc**
+to cancel — then deletes and re-downloads each selected model, unloading any that are
+loaded and fetching the same quant non-interactively. Add `-y` to skip the final
+confirmation. (Sorting survives selection; when stdin isn't a TTY it falls back to numbered
+input.) The `rm` / `redownload` model pickers offer the same UI, sortable by name / size.
 
 ```text
   ⬆ update      gemma-4-26b-a4b-it@q4_k_m Q4_K_M   local 2026-04-10 → HF 2026-07-17
