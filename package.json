@@ -1,0 +1,26 @@
+{
+  "name": "lms-helper",
+  "version": "1.0.0",
+  "description": "Small pnpm helpers for managing LM Studio models from the CLI (delete / force re-download), pending `lms remove` upstream (lms#579).",
+  "main": "index.js",
+  "scripts": {
+    "model:ls": "node scripts/list-models.mjs",
+    "model:rm": "node scripts/remove-model.mjs",
+    "model:redownload": "node scripts/redownload-model.mjs"
+  },
+  "keywords": [
+    "lmstudio",
+    "lms",
+    "cli"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.5.2",
+      "onFail": "download"
+    }
+  },
+  "type": "module"
+}

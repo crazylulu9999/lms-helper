@@ -1,0 +1,73 @@
+# lms-helper
+
+Small, zero-dependency pnpm helpers for managing **LM Studio** models from the CLI.
+
+The `lms` CLI has no delete command (feature request
+[lms#579](https://github.com/lmstudio-ai/lms/issues/579), implementation PR
+[lms#580](https://github.com/lmstudio-ai/lms/pull/580) — still open), and `lms get`
+**skips a model that is already downloaded** even when the upstream repo has newer
+files. These scripts fill both gaps until `lms remove` ships upstream.
+
+They talk only to the `lms` CLI (`lms ls/ps --json`, `lms get`, `lms unload`) plus the
+filesystem — no extra dependencies, nothing to install.
+
+## Commands
+
+```bash
+pnpm model:ls                       # list models downloaded on THIS machine (size + path)
+pnpm model:rm [modelKey]            # delete a downloaded model from disk
+pnpm model:redownload [modelKey]    # delete + re-download (force-update to the latest upstream files)
+```
+
+Omit `modelKey` to pick interactively. Get a model's key from `pnpm model:ls` or `lms ls`.
+
+### Examples
+
+```bash
+pnpm model:rm gemma-4-26b-a4b-it@q4_k_m           # confirm, then delete
+pnpm model:rm gemma-4-26b-a4b-it@q4_k_m --dry-run # show what would be deleted
+pnpm model:rm gemma-4-26b-a4b-it@q4_k_m -y --unload
+
+pnpm model:redownload gemma-4-26b-a4b-it@q4_k_m   # delete, then interactive re-get (pick same quant)
+pnpm model:redownload gemma-4-26b-a4b-it@q4_k_m -y --unload   # unattended, same quant
+```
+
+> If a flag isn't forwarded, put it after `--`: `pnpm model:rm -- gemma-4-... -y`.
+
+## Options
+
+| Flag | `rm` | `redownload` | Meaning |
+| --- | :-: | :-: | --- |
+| `-y`, `--yes` | ✓ | ✓ | Skip confirmation. For `redownload`, also try a non-interactive same-quant fetch. |
+| `--unload` | ✓ | ✓ | Unload the model first if it is currently loaded. |
+| `--dry-run` | ✓ | | Show what would be deleted, without deleting. |
+| `--keep-partials` | | ✓ | Don't clean leftover download partials before re-fetching. |
+| `-h`, `--help` | ✓ | ✓ | Show help. |
+
+## Safety model (ported from lms PR #580)
+
+- **Local only** — operates on models stored on this machine (`deviceIdentifier === null`);
+  remote LM Link peers are never touched.
+- **Containment check** — refuses to delete anything outside the resolved models folder
+  (read from `~/.lmstudio/settings.json` → `downloadsFolder`, default `~/.lmstudio/models`).
+- **Loaded-model guard** — refuses to delete a model that is currently loaded (use `--unload`).
+- **Confirmation** before any deletion (skip with `-y`).
+- **Prunes** now-empty publisher/repo folders after a delete.
+- **Cleans stale `downloading_*.part` files**, avoiding the "ghost resume" failure from lms#579.
+
+## Why `redownload` deletes first
+
+`lms get` matches by variant name and checks only whether that quant exists on disk — it
+never compares the upstream Hugging Face revision. So re-running `lms get` on an updated
+repo prints `Model already downloaded` and does nothing. `redownload` deletes the local
+variant, then runs `lms get "https://huggingface.co/<publisher>/<repo>" --select` (full HF
+URL — the short `owner/repo` form stalls on LM Studio's catalog search) so a fresh copy is
+pulled. It keeps sibling files (config / mmproj / other quants) intact.
+
+## Environment
+
+- `LMS_BIN` — path to the `lms` binary (default: `~/.lmstudio/bin/lms`, else `lms` on `PATH`).
+- `LMSTUDIO_HOME` — LM Studio home dir (default: `~/.lmstudio`).
+- `NO_COLOR` — disable colored output.
+
+Requires Node 18+ (uses `node:readline/promises`).
