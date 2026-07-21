@@ -4,3 +4,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+
+# editor/OS backups & stray tilde files (can hold secrets — never commit)
+*~
+~
