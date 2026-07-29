@@ -618,9 +618,13 @@ async function pickManyNumbered(items, render, message) {
  *
  * @param model  A model object from listDownloadedLocal().
  * @param folder The resolved models folder.
- * @param opts   yes: try an exact-quant non-interactive fetch (falls back to --select);
+ * @param opts   yes: run fully non-interactively — never open lms's `--select` picker (a failed
+ *               exact-quant fetch just reports failure instead of falling back to it);
  *               unload: unload the model first if it is loaded;
  *               keepPartials: skip cleaning leftover download partials.
+ *
+ * The known quant (`model.quantization.name`) is always re-fetched exactly (`get <url>@<quant>`),
+ * so no variant menu appears in the normal path; `--select` is only a fallback (interactive runs).
  */
 export async function redownloadModel(model, folder, opts = {}) {
   const { yes = false, unload = false, keepPartials = false, index } = opts;
@@ -654,11 +658,16 @@ export async function redownloadModel(model, folder, opts = {}) {
   if (!keepPartials) await cleanPartials(fileAbsPath);
 
   let code;
-  if (yes && quant) {
+  if (quant) {
+    // Re-fetch the exact quant the model already had — no variant menu, no re-picking.
     code = lmsInteractive(["get", `${repoUrl}@${quant}`, "-y"]);
-    if (code !== 0) code = lmsInteractive(["get", repoUrl, "--select"]);
-  } else {
+    // Only if that exact variant is missing do we (interactively) let lms present its picker.
+    if (code !== 0 && !yes) code = lmsInteractive(["get", repoUrl, "--select"]);
+  } else if (!yes) {
+    // Quant unknown and prompting allowed → lms's variant picker.
     code = lmsInteractive(["get", repoUrl, "--select"]);
+  } else {
+    return { ok: false, reason: "quant unknown; can't pick non-interactively with -y" };
   }
   return { ok: code === 0, code, repoUrl, quant };
 }

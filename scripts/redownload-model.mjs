@@ -34,8 +34,8 @@ Arguments:
   modelKey            e.g. "gemma-4-26b-a4b-it@q4_k_m". Omit to pick interactively.
 
 Options:
-  -y, --yes           Skip confirmation AND try a non-interactive fetch of the same
-                      quant (falls back to interactive variant selection on failure).
+  -y, --yes           Skip the confirmation prompt. Fully non-interactive: if the same
+                      quant can't be re-fetched, fail instead of opening lms's variant picker.
       --unload        Unload the model first if it is currently loaded.
       --keep-partials Do not clean leftover download partials before re-fetching.
   -h, --help          Show this help.`;
@@ -110,7 +110,6 @@ async function main() {
       console.error(c.dim("Aborted. Nothing changed."));
       return;
     }
-    if (quant) console.error(c.dim(`(In the variant list, choose: ${c.yellow(quant.toUpperCase())})`));
   }
   console.error(c.dim("\nStarting `lms get` …"));
 

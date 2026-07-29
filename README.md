@@ -108,9 +108,13 @@ pnpm model:redownload gemma-4-26b-a4b-it@q4_k_m -y --unload   # unattended, same
 `lms get` matches by variant name and checks only whether that quant exists on disk — it
 never compares the upstream Hugging Face revision. So re-running `lms get` on an updated
 repo prints `Model already downloaded` and does nothing. `redownload` deletes the local
-variant, then runs `lms get "https://huggingface.co/<publisher>/<repo>" --select` (full HF
-URL — the short `owner/repo` form stalls on LM Studio's catalog search) so a fresh copy is
-pulled. It keeps sibling files (config / mmproj / other quants) intact.
+variant, then re-fetches the **same** quant with
+`lms get "https://huggingface.co/<publisher>/<repo>@<quant>" -y` (full HF URL — the short
+`owner/repo` form stalls on LM Studio's catalog search) so a fresh copy is pulled with no
+variant menu to re-pick. If that exact variant can't be found it falls back to LM Studio's
+interactive `--select` picker (skipped under `-y`). It keeps sibling files (config / mmproj
+/ other quants) intact. To switch to a *different* quant, use `lms get <repo>` directly —
+`redownload` is for in-place same-variant updates.
 
 ## Environment
 
