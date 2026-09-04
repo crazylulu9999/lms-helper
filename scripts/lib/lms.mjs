@@ -499,6 +499,54 @@ export function enrichModel(model, folder, index) {
   };
 }
 
+/**
+ * For a GGUF vision model, check that a sibling `*mmproj*.gguf` projector file exists and is
+ * non-empty. LM Studio indexes `vision: true` by filename pairing, not by content — a missing
+ * or 0-byte mmproj still loads fine as far as `lms ls`/model size is concerned and only fails
+ * at load time ("Failed to load CLIP model from ..."). `sizeBytes` itself can't catch this: it
+ * sums the whole model folder, so a 0-byte mmproj and a missing one both report the same total
+ * as the text weights alone. Only meaningful for `format === "gguf"` — MLX/safetensors vision
+ * models bundle the vision tower differently and aren't covered.
+ *
+ * @returns null when not applicable (not vision, or not gguf), otherwise
+ *   { ok, reason, mmprojPath, mmprojBytes }
+ */
+export function checkVisionMmproj(model, folder, index) {
+  if (!model.vision || model.format !== "gguf") return null;
+  const { fileAbsPath } = enrichModel(model, folder, index);
+  const dir = path.dirname(fileAbsPath);
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return { ok: false, reason: "model directory not found", mmprojPath: null, mmprojBytes: null };
+  }
+  const candidates = entries.filter((e) => e.isFile() && /mmproj/i.test(e.name)).map((e) => e.name);
+  if (candidates.length === 0) {
+    return { ok: false, reason: "no mmproj file found", mmprojPath: null, mmprojBytes: null };
+  }
+  // If several mmproj variants exist (rare), the largest is presumably the one in use.
+  let best = null;
+  for (const name of candidates) {
+    let size;
+    try {
+      size = fs.statSync(path.join(dir, name)).size;
+    } catch {
+      continue;
+    }
+    if (!best || size > best.size) best = { path: path.join(dir, name), size };
+  }
+  if (!best || best.size === 0) {
+    return {
+      ok: false,
+      reason: "mmproj is 0 bytes",
+      mmprojPath: best?.path || path.join(dir, candidates[0]),
+      mmprojBytes: best?.size ?? 0,
+    };
+  }
+  return { ok: true, reason: null, mmprojPath: best.path, mmprojBytes: best.size };
+}
+
 /** A Hugging Face access token from the environment, if set (used for gated repos). */
 export function hfToken() {
   return process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN || process.env.HF_API_TOKEN || "";

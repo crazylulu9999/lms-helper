@@ -20,6 +20,30 @@ pnpm model:rm [modelKey]            # delete a downloaded model from disk
 pnpm model:redownload [modelKey]    # delete + re-download (force-update to the latest upstream files)
 ```
 
+### `model:ls`
+
+Besides size + on-disk path, `model:ls` checks every GGUF vision model (`vision: true`
+in `lms ls --json`) for a usable `mmproj` projector file next to it:
+
+```text
+  gemma-4-e4b-it Q4_K_XL  7.04 GB  unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-UD-Q4_K_XL.gguf
+  gemma-4-26b-a4b-it Q4_K_M  16.87 GB  unsloth/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+    ⚠ vision model, mmproj is 0 bytes — won't load ("Failed to load CLIP model")
+```
+
+LM Studio pairs a vision model with its `mmproj` file by filename, not content, so a
+transfer that leaves a 0-byte or missing mmproj still shows up as a normal vision model —
+the failure ("Failed to load CLIP model from ...") only surfaces when you actually load
+it. This check reads the real file on disk (not LM Studio's cached model size, which sums
+whatever it indexed and won't reflect a file that changed since), so it catches the
+problem at listing time and exits non-zero if any vision model is affected — usable as a
+deploy-verification gate (`pnpm model:ls || alert`). GGUF only; MLX/safetensors vision
+models bundle the vision tower differently and aren't covered.
+
+If this fires, don't just drop a fixed file in place — LM Studio doesn't re-scan a model
+directory once it's indexed. Use `model:rm` then re-fetch/re-transfer so LM Studio
+indexes the corrected files from scratch.
+
 ### Running without pnpm
 
 Zero dependencies means there's nothing to install — pnpm here is just a task runner, not
