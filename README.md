@@ -20,6 +20,31 @@ pnpm model:rm [modelKey]            # delete a downloaded model from disk
 pnpm model:redownload [modelKey]    # delete + re-download (force-update to the latest upstream files)
 ```
 
+### Running without pnpm
+
+Zero dependencies means there's nothing to install — pnpm here is just a task runner, not
+a requirement. If pnpm/corepack isn't cooperating (e.g. an older corepack that doesn't read
+`devEngines` yet), call the scripts directly with `node`:
+
+```bash
+node scripts/list-models.mjs
+node scripts/outdated-models.mjs --all -y
+```
+
+Or link the bundled dispatcher (`bin/lms-helper.mjs`) as a single command on `$PATH`:
+
+```bash
+ln -s "$(pwd)/bin/lms-helper.mjs" ~/bin/lms-helper   # any dir on $PATH works
+
+lms-helper ls
+lms-helper outdated --all -y
+lms-helper rm gemma-4-26b-a4b-it@q4_k_m
+lms-helper redownload gemma-4-26b-a4b-it@q4_k_m -y --unload
+```
+
+The symlink resolves to this repo's real path, so it works from any directory — no pnpm,
+npm, or corepack involved.
+
 ### `model:outdated`
 
 Compares each downloaded model's Hugging Face repo `lastModified` against the local
