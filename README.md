@@ -44,6 +44,12 @@ If this fires, don't just drop a fixed file in place — LM Studio doesn't re-sc
 directory once it's indexed. Use `model:rm` then re-fetch/re-transfer so LM Studio
 indexes the corrected files from scratch.
 
+⚠ **Known blind spot**: this only catches a 0-byte/corrupt mmproj. `vision: true` turns out
+to be *derived* from mmproj's current presence, not read from the base GGUF's own
+architecture — deleting the mmproj file entirely flips `vision` back to `false`, so the
+model silently drops out of this check too. `model:outdated` doesn't have this problem — it
+cross-checks against the upstream repo's actual file listing instead, see below.
+
 ### Running without pnpm
 
 Zero dependencies means there's nothing to install — pnpm here is just a task runner, not
@@ -109,8 +115,28 @@ The check is repo-level (any file change bumps `lastModified`). **Hub-aliased** 
 (e.g. `google/gemma-4-31b-qat` → `lmstudio-community/gemma-4-31B-it-QAT-GGUF`) and **bundled**
 models are resolved to their real underlying repo via LM Studio's model-index cache. What
 still shows `unknown`: models you imported/created locally (no HF repo — e.g. a self-converted
-MLX), and — without a token — gated repos. Set a Hugging Face read token to check gated repos —
-either export it, or drop it in a `.env` (auto-loaded, gitignored):
+MLX), and — without a token — gated repos.
+
+**Vision check (ground-truth version of `model:ls`'s)**: for each GGUF model, the repo's
+file listing (already fetched for the freshness check, no extra request) is checked for an
+`mmproj` file. If the upstream repo ships one but the local copy is missing or 0 bytes,
+that's flagged the same way `model:ls` does:
+
+```text
+  ✓ up-to-date  gemma-4-e4b-it Q4_K_XL   local 2026-07-21 → HF 2026-07-17
+    ⚠ vision model, no mmproj file found — won't load ("Failed to load CLIP model")
+
+1 vision model(s) missing a usable mmproj file (upstream repo ships one — see ⚠ above).
+```
+
+Unlike `model:ls`, this doesn't depend on LM Studio's local `vision` flag, so it also
+catches an mmproj deleted entirely (not just corrupted) — at the cost of needing network
+access. Also exits non-zero, so `-u` surfaces affected models even when otherwise
+up-to-date, and it's usable as the same kind of deploy-verification gate
+(`pnpm model:outdated -u || alert`). GGUF only.
+
+Set a Hugging Face read token to check gated repos — either export it, or drop it in a
+`.env` (auto-loaded, gitignored):
 
 ```bash
 # option A — shell

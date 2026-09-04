@@ -5,6 +5,12 @@
 // local copy was downloaded — i.e. HF repo `lastModified` is newer than the local
 // file's mtime. That usually means re-quantized weights / an updated chat template
 // or tokenizer, which `lms get` will NOT pull on its own (see model:redownload).
+//
+// Also cross-checks GGUF vision models against the upstream repo's file listing: if the
+// repo ships an mmproj but the local copy's is missing or 0 bytes, that's flagged too. This
+// needs the repo's file list (already fetched for the freshness check), so it catches an
+// mmproj deleted entirely — something `lms ls`'s local-only `vision` flag can't, since that
+// flag is itself derived from mmproj's current presence (see model:ls / checkVisionMmproj).
 
 import {
   c,
@@ -21,6 +27,8 @@ import {
   parseArgs,
   pickMany,
   redownloadModel,
+  repoHasMmproj,
+  scanMmprojNear,
   wantsYes,
   ymd,
 } from "./lib/lms.mjs";
@@ -39,7 +47,7 @@ Options:
                        (picker: ↑/↓ move · space toggle · a all · s sort · r reverse)
       --all            Re-download every model with an update, no picker.
   -y, --yes            With -i/--all: skip the confirmation before re-downloading.
-  -u, --updates-only   Show only models with an update available.
+  -u, --updates-only   Show only models with an update available (or a vision issue).
       --json           Machine-readable JSON output.
   -h, --help           Show this help.
 
@@ -47,7 +55,11 @@ Auth: set $HF_TOKEN (or $HUGGING_FACE_HUB_TOKEN) to check gated repos (Google,
 Nvidia, …); without it they show as "unknown".
 
 Note: the check is repo-level (any file change bumps lastModified). Models whose
-path is not a Hugging Face repo (LM Studio catalog aliases) show as "unknown".`;
+path is not a Hugging Face repo (LM Studio catalog aliases) show as "unknown".
+
+Vision check: GGUF models are cross-checked against the upstream repo's file list — if it
+ships an mmproj but the local one is missing/0-byte, that's flagged with ⚠ and the process
+exits non-zero (deploy-verification gate). MLX/safetensors vision models aren't covered.`;
 
 const STATUS_LABEL = {
   update: "⬆ update    ",
@@ -89,6 +101,7 @@ async function main() {
       let status = "unknown";
       let remote = null;
       let note = "";
+      let visionIssue = null;
 
       if (!repo) {
         note = "no HF repo in path";
@@ -107,6 +120,13 @@ async function main() {
           if (!local) note = "local file missing";
           else status = remote.getTime() > local.getTime() ? "update" : "ok";
         }
+        // Ground-truth vision check: does the UPSTREAM repo ship an mmproj at all? Unlike
+        // `model.vision`, this doesn't depend on whether the local copy currently has one —
+        // it catches an mmproj that's been deleted entirely, not just a 0-byte/corrupt one.
+        if (r.ok && model.format === "gguf" && repoHasMmproj(r.siblings)) {
+          const scan = scanMmprojNear(fileAbsPath);
+          if (!scan.ok) visionIssue = scan.reason;
+        }
       }
 
       return {
@@ -117,9 +137,13 @@ async function main() {
         status,
         note,
         sourceType,
+        visionIssue,
       };
     }),
   );
+
+  const brokenVision = rows.filter((r) => r.visionIssue).length;
+  if (brokenVision > 0) process.exitCode = 1;
 
   if (flags.json) {
     console.log(
@@ -133,6 +157,7 @@ async function main() {
           remoteDate: ymd(r.remote),
           status: r.status,
           note: r.note || undefined,
+          visionIssue: r.visionIssue || undefined,
         })),
         null,
         2,
@@ -221,7 +246,7 @@ async function main() {
   );
 
   const onlyUpdates = Boolean(flags.u || flags.updates || flags["updates-only"]);
-  const shown = onlyUpdates ? rows.filter((r) => r.status === "update") : rows;
+  const shown = onlyUpdates ? rows.filter((r) => r.status === "update" || r.visionIssue) : rows;
 
   console.error(
     c.dim(`Models folder: ${folder}  ·  comparing HF repo lastModified vs local mtime\n`),
@@ -231,6 +256,9 @@ async function main() {
     const dates = `${c.dim("local")} ${ymd(r.local)} ${c.dim("→ HF")} ${ymd(r.remote)}`;
     const note = r.note ? c.dim(`  (${r.note})`) : "";
     console.log(`  ${badge(r.status)}  ${c.cyan(r.model.modelKey)}${q}   ${dates}${note}`);
+    if (r.visionIssue) {
+      console.log(c.yellow(`    ⚠ vision model, ${r.visionIssue} — won't load ("Failed to load CLIP model")`));
+    }
   }
   if (onlyUpdates && shown.length === 0) {
     console.log(c.green("  All models are up to date. 🎉"));
@@ -242,6 +270,13 @@ async function main() {
       `${c.green(`${count("ok")} up-to-date`)} · ` +
       `${c.dim(`${count("unknown")} unknown`)}`,
   );
+  if (brokenVision > 0) {
+    console.error(
+      c.yellow(
+        `${brokenVision} vision model(s) missing a usable mmproj file (upstream repo ships one — see ⚠ above).`,
+      ),
+    );
+  }
   if (count("update") > 0) {
     console.error(
       c.dim("Update interactively: ") +

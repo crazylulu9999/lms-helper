@@ -500,20 +500,12 @@ export function enrichModel(model, folder, index) {
 }
 
 /**
- * For a GGUF vision model, check that a sibling `*mmproj*.gguf` projector file exists and is
- * non-empty. LM Studio indexes `vision: true` by filename pairing, not by content — a missing
- * or 0-byte mmproj still loads fine as far as `lms ls`/model size is concerned and only fails
- * at load time ("Failed to load CLIP model from ..."). `sizeBytes` itself can't catch this: it
- * sums the whole model folder, so a 0-byte mmproj and a missing one both report the same total
- * as the text weights alone. Only meaningful for `format === "gguf"` — MLX/safetensors vision
- * models bundle the vision tower differently and aren't covered.
+ * Scan the directory containing `fileAbsPath` for a usable `*mmproj*.gguf` sibling (present
+ * and non-empty). Pure filesystem check, no opinion on whether one is expected — see callers.
  *
- * @returns null when not applicable (not vision, or not gguf), otherwise
- *   { ok, reason, mmprojPath, mmprojBytes }
+ * @returns { ok, reason, mmprojPath, mmprojBytes }
  */
-export function checkVisionMmproj(model, folder, index) {
-  if (!model.vision || model.format !== "gguf") return null;
-  const { fileAbsPath } = enrichModel(model, folder, index);
+export function scanMmprojNear(fileAbsPath) {
   const dir = path.dirname(fileAbsPath);
   let entries;
   try {
@@ -547,12 +539,46 @@ export function checkVisionMmproj(model, folder, index) {
   return { ok: true, reason: null, mmprojPath: best.path, mmprojBytes: best.size };
 }
 
+/**
+ * For a GGUF vision model, check that a sibling `*mmproj*.gguf` projector file exists and is
+ * non-empty. Gated on LM Studio's live `vision` flag — which turns out to be DERIVED from
+ * mmproj's current presence, not from the base GGUF's own architecture (confirmed by dumping
+ * a real vision GGUF's header: no vision/clip keys anywhere in it). So this catches a 0-byte
+ * or corrupted mmproj (vision stays true, a file is just unusable), but NOT one deleted
+ * entirely — `vision` flips false right along with the file, so this returns null and the
+ * model silently drops out of the check. `sizeBytes` can't catch either case: it sums
+ * whatever LM Studio currently finds in the folder, so 0-byte and missing report the same
+ * total as the text weights alone. Only meaningful for `format === "gguf"` — MLX/safetensors
+ * vision models bundle the vision tower differently and aren't covered.
+ *
+ * For the "deleted entirely" blind spot, see model:outdated's HF-repo-backed check, which
+ * knows a model *should* have an mmproj from the upstream repo's file listing instead of
+ * from any local, circular signal.
+ *
+ * @returns null when not applicable (not vision, or not gguf), otherwise
+ *   { ok, reason, mmprojPath, mmprojBytes }
+ */
+export function checkVisionMmproj(model, folder, index) {
+  if (!model.vision || model.format !== "gguf") return null;
+  const { fileAbsPath } = enrichModel(model, folder, index);
+  return scanMmprojNear(fileAbsPath);
+}
+
+/** True if a Hugging Face repo's sibling filenames include an mmproj (GGUF vision projector). */
+export function repoHasMmproj(siblings) {
+  return Array.isArray(siblings) && siblings.some((f) => /mmproj/i.test(f));
+}
+
 /** A Hugging Face access token from the environment, if set (used for gated repos). */
 export function hfToken() {
   return process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN || process.env.HF_API_TOKEN || "";
 }
 
-/** Fetch a repo's `lastModified` timestamp from the Hugging Face API (auth if $HF_TOKEN set). */
+/**
+ * Fetch a repo's `lastModified` timestamp and file listing from the Hugging Face API (auth if
+ * $HF_TOKEN set). `siblings` is the repo's filenames — used to check whether the upstream repo
+ * ships an mmproj at all (see `repoHasMmproj`), independent of what the local copy has.
+ */
 export async function hfLastModified(owner, name) {
   const url = `https://huggingface.co/api/models/${owner}/${name}`;
   const headers = { "user-agent": "lms-helper" };
@@ -562,7 +588,11 @@ export async function hfLastModified(owner, name) {
     const res = await fetch(url, { headers });
     if (!res.ok) return { ok: false, status: res.status };
     const json = await res.json();
-    return { ok: true, lastModified: json.lastModified ? new Date(json.lastModified) : null };
+    return {
+      ok: true,
+      lastModified: json.lastModified ? new Date(json.lastModified) : null,
+      siblings: Array.isArray(json.siblings) ? json.siblings.map((s) => s.rfilename) : [],
+    };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
