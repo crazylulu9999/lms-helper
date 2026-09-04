@@ -6,7 +6,12 @@ The `lms` CLI has no delete command (feature request
 [lms#579](https://github.com/lmstudio-ai/lms/issues/579), implementation PR
 [lms#580](https://github.com/lmstudio-ai/lms/pull/580) — still open), and `lms get`
 **skips a model that is already downloaded** even when the upstream repo has newer
-files. These scripts fill both gaps until `lms remove` ships upstream.
+files — tracked upstream (not in `lms` itself, but in the shared app/backend tracker) as
+[lmstudio-bug-tracker#2121](https://github.com/lmstudio-ai/lmstudio-bug-tracker/issues/2121)
+("downloaded model is out of date / has been replaced upstream") and
+[#835](https://github.com/lmstudio-ai/lmstudio-bug-tracker/issues/835)
+("no option to download the newer version"), both still open. These scripts fill both
+gaps until `lms remove`/an update path ships upstream.
 
 They talk only to the `lms` CLI (`lms ls/ps --json`, `lms get`, `lms unload`) plus the
 filesystem — no extra dependencies, nothing to install.
