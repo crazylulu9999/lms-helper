@@ -5,6 +5,13 @@
 // Ported from lmstudio-ai/lms PR #580 (issue #579): a filesystem delete of the
 // model's path under the resolved models folder, made safe (containment check,
 // loaded-model guard, confirmation, empty-folder pruning).
+//
+// For a flat GGUF repo folder (one quant file per model, plus shared siblings like an
+// mmproj projector or config.json), the model's *path* is just that one quant file —
+// deleting only it orphans the siblings, and a stale orphaned mmproj can silently get
+// re-paired with a future re-download of the same repo. So when the quant being removed
+// is a plain file and no OTHER downloaded quant shares its folder, the whole folder is
+// removed instead of just the one file.
 
 import fsp from "node:fs/promises";
 import {
@@ -19,6 +26,7 @@ import {
   modelsFolder,
   parseArgs,
   pathIsAtOrInside,
+  planRemoval,
   pruneEmptyParents,
   resolveTarget,
   wantsYes,
@@ -36,7 +44,11 @@ Options:
   -y, --yes       Skip the confirmation prompt.
       --unload    Unload the model first if it is currently loaded.
       --dry-run   Show what would be deleted, without deleting.
-  -h, --help      Show this help.`;
+  -h, --help      Show this help.
+
+If the quant's folder holds siblings (mmproj projector, config.json) and no other
+downloaded quant is in that same folder, the whole folder is removed — not just the
+quant file — so a vision model's mmproj doesn't get left behind as a stale orphan.`;
 
 async function main() {
   const { positionals, flags } = parseArgs(process.argv.slice(2));
@@ -85,12 +97,25 @@ async function main() {
     }
   }
 
+  const { dir, deletePath, sweepFolder, sharedBySibling, freedBytes } = await planRemoval(
+    target,
+    models,
+    folder,
+  );
+
   console.error(
     `\n${c.bold("Remove:  ")}${c.cyan(target.modelKey)}` +
       (target.quantization?.name ? ` ${c.dim(target.quantization.name)}` : ""),
   );
-  console.error(`${c.dim("Size:    ")}${formatBytes(target.sizeBytes)}`);
-  console.error(`${c.dim("Location:")} ${absPath}`);
+  console.error(`${c.dim("Size:    ")}${formatBytes(freedBytes)}`);
+  console.error(`${c.dim("Location:")} ${deletePath}`);
+  if (sweepFolder) {
+    console.error(c.dim("         (includes any mmproj/config siblings in this folder)"));
+  } else if (sharedBySibling) {
+    console.error(
+      c.yellow("         Other downloaded quant(s) share this folder — leaving mmproj/config in place."),
+    );
+  }
 
   if (flags["dry-run"]) {
     console.error(c.yellow("\n[dry-run] Nothing was deleted."));
@@ -98,20 +123,22 @@ async function main() {
   }
 
   if (!wantsYes(flags)) {
-    const ok = await confirm(
-      c.red(`\nPermanently delete this model (${formatBytes(target.sizeBytes)})?`),
-    );
+    const ok = await confirm(c.red(`\nPermanently delete this model (${formatBytes(freedBytes)})?`));
     if (!ok) {
       console.error(c.dim("Aborted. Nothing removed."));
       return;
     }
   }
 
-  // `recursive: true` handles both single-file (.gguf) and folder-style variant paths.
-  await fsp.rm(absPath, { recursive: true, force: true });
-  await cleanPartials(absPath);
-  await pruneEmptyParents(absPath, folder);
-  console.error(c.green(`✓ Removed "${target.modelKey}" — freed ${formatBytes(target.sizeBytes)}.`));
+  // `recursive: true` handles single files, folder-style variant paths, and a swept folder alike.
+  await fsp.rm(deletePath, { recursive: true, force: true });
+  if (sweepFolder) {
+    await pruneEmptyParents(dir, folder);
+  } else {
+    await cleanPartials(absPath);
+    await pruneEmptyParents(absPath, folder);
+  }
+  console.error(c.green(`✓ Removed "${target.modelKey}" — freed ${formatBytes(freedBytes)}.`));
 }
 
 main().catch((e) => {

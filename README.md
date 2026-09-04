@@ -194,6 +194,11 @@ pnpm model:redownload gemma-4-26b-a4b-it@q4_k_m -y --unload   # unattended, same
   (read from `~/.lmstudio/settings.json` → `downloadsFolder`, default `~/.lmstudio/models`).
 - **Loaded-model guard** — refuses to delete a model that is currently loaded (use `--unload`).
 - **Confirmation** before any deletion (skip with `-y`).
+- **Sweeps orphaned siblings** — a quant's folder can hold an mmproj projector or
+  config.json that live next to it, not inside it; deleting just the quant would leave
+  them behind (and a stale orphaned mmproj can later get silently re-paired with a fresh
+  download of the same repo). If no *other* downloaded quant still shares that folder,
+  the whole folder is removed instead of just the one file.
 - **Prunes** now-empty publisher/repo folders after a delete.
 - **Cleans stale `downloading_*.part` files**, avoiding the "ghost resume" failure from lms#579.
 

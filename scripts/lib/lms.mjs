@@ -156,6 +156,39 @@ export function pathIsAtOrInside(parentPath, childPath) {
   return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
+/**
+ * Decide what `model:rm` should actually delete, and how much space that frees. For a flat
+ * GGUF repo folder, a quant's own file has siblings (an mmproj projector, config.json) that
+ * live NEXT TO it, not inside it — deleting just the quant orphans them, and a stale
+ * orphaned mmproj can silently get re-paired with a future re-download of the same repo. So
+ * the whole containing folder is swept instead of just the one file, but only when no OTHER
+ * downloaded model still has a file in that same folder (a sibling quant needs it).
+ *
+ * @returns { absPath, dir, deletePath, sweepFolder, sharedBySibling, freedBytes }
+ */
+export async function planRemoval(target, models, folder) {
+  const absPath = absPathOf(target, folder);
+  let stat = null;
+  try {
+    stat = await fsp.stat(absPath);
+  } catch {
+    // leave null — treated like the folder-style case below (no sweep, plain delete).
+  }
+  const isFile = Boolean(stat?.isFile());
+  const dir = path.dirname(absPath);
+  const sharedBySibling =
+    isFile && models.some((m) => m !== target && path.dirname(absPathOf(m, folder)) === dir);
+  const sweepFolder = isFile && !sharedBySibling;
+  return {
+    absPath,
+    dir,
+    deletePath: sweepFolder ? dir : absPath,
+    sweepFolder,
+    sharedBySibling,
+    freedBytes: isFile && sharedBySibling ? stat.size : target.sizeBytes,
+  };
+}
+
 /** Delete now-empty parent dirs up towards (but never including) the models folder. */
 export async function pruneEmptyParents(absolutePath, folder) {
   let dir = path.dirname(absolutePath);
