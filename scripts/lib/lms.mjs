@@ -584,15 +584,58 @@ export function scanMmprojNear(fileAbsPath) {
  * total as the text weights alone. Only meaningful for `format === "gguf"` — MLX/safetensors
  * vision models bundle the vision tower differently and aren't covered.
  *
- * For the "deleted entirely" blind spot, see model:outdated's HF-repo-backed check, which
- * knows a model *should* have an mmproj from the upstream repo's file listing instead of
- * from any local, circular signal.
+ * For the "deleted entirely" blind spot, either use model:outdated's HF-repo-backed check
+ * (accurate, needs network) or `model:ls --strict` (offline, allowlist-based — see
+ * checkVisionMmprojStrict).
  *
  * @returns null when not applicable (not vision, or not gguf), otherwise
  *   { ok, reason, mmprojPath, mmprojBytes }
  */
 export function checkVisionMmproj(model, folder, index) {
   if (!model.vision || model.format !== "gguf") return null;
+  const { fileAbsPath } = enrichModel(model, folder, index);
+  return scanMmprojNear(fileAbsPath);
+}
+
+/**
+ * GGUF architectures known to require a paired mmproj/CLIP encoder — observed from real
+ * `lms ls --json` output where `vision: true` was reported (see checkVisionMmproj's own
+ * caveat: that flag is unreliable once mmproj goes missing, so it can't be used to build
+ * this list reliably either — this is a best-effort snapshot, not a derived truth). Needs
+ * upkeep as new model families ship — an architecture missing from this list is silently
+ * NOT flagged by checkVisionMmprojStrict (false negative), and the reverse can also
+ * happen: a genuinely text-only variant that happens to share a listed architecture string
+ * would be flagged unnecessarily (false positive).
+ *
+ * MTP/draft-speculation architectures are deliberately excluded even though LM Studio
+ * reports them as vision:true too (e.g. "qwen3_5_mtp") — they're auxiliary artifacts, not
+ * standalone-loadable models, so flagging a missing mmproj on them would be a pure false
+ * positive (parallel to the aux-model classification problem in general).
+ */
+export const VISION_ARCHITECTURES = new Set([
+  "gemma4",
+  "glm4v",
+  "nemotron_h_moe",
+  "qwen3_5",
+  "qwen35",
+  "qwen35moe",
+  "qwen3_5_moe",
+]);
+
+/**
+ * Strict, offline variant of checkVisionMmproj: fires when the model's *architecture* is
+ * known to require vision (VISION_ARCHITECTURES), not only when LM Studio's live `vision`
+ * flag says so — closing the "mmproj deleted entirely" blind spot without a network call.
+ * Trades accuracy for that: see VISION_ARCHITECTURES for the false-positive/negative risk.
+ * model:outdated's HF-repo-backed check has neither failure mode, at the cost of network
+ * access.
+ *
+ * @returns null when not applicable (not gguf, and neither vision-flagged nor
+ *   architecture-listed), otherwise { ok, reason, mmprojPath, mmprojBytes }
+ */
+export function checkVisionMmprojStrict(model, folder, index) {
+  if (model.format !== "gguf") return null;
+  if (!model.vision && !VISION_ARCHITECTURES.has(model.architecture)) return null;
   const { fileAbsPath } = enrichModel(model, folder, index);
   return scanMmprojNear(fileAbsPath);
 }

@@ -85,8 +85,14 @@ indexes the corrected files from scratch.
 ⚠ **Known blind spot**: this only catches a 0-byte/corrupt mmproj. `vision: true` turns out
 to be *derived* from mmproj's current presence, not read from the base GGUF's own
 architecture — deleting the mmproj file entirely flips `vision` back to `false`, so the
-model silently drops out of this check too. `model:outdated` doesn't have this problem — it
-cross-checks against the upstream repo's actual file listing instead, see below.
+model silently drops out of this check too. Two ways to close that gap:
+- `pnpm model:outdated` — cross-checks against the upstream repo's actual file listing
+  instead of the local `vision` flag; accurate, needs network (see below).
+- `pnpm model:ls --strict` — also flags a model whose *architecture* is in a small,
+  hand-maintained known-vision list (`VISION_ARCHITECTURES` in `lib/lms.mjs`), regardless
+  of the local `vision` flag; offline, but can miss a brand-new architecture or flag a
+  genuinely text-only same-family variant. Good for a fast deploy-verification pass right
+  after a transfer, before/without a network round-trip.
 
 ### `model:outdated`
 
