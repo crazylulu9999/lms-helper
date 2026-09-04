@@ -1,6 +1,7 @@
 # lms-helper
 
-Small, zero-dependency pnpm helpers for managing **LM Studio** models from the CLI.
+Small, zero-dependency CLI helpers for managing **LM Studio** models — as the `lms-helper`
+command (see Install) or as pnpm scripts (see Commands).
 
 The `lms` CLI has no delete command (feature request
 [lms#579](https://github.com/lmstudio-ai/lms/issues/579), implementation PR
@@ -14,9 +15,41 @@ files — tracked upstream (not in `lms` itself, but in the shared app/backend t
 gaps until `lms remove`/an update path ships upstream.
 
 They talk only to the `lms` CLI (`lms ls/ps --json`, `lms get`, `lms unload`) plus the
-filesystem — no extra dependencies, nothing to install.
+filesystem — no extra dependencies.
+
+## Install
+
+```bash
+./install.sh                  # symlinks bin/lms-helper.mjs onto ~/bin as `lms-helper`
+./install.sh /usr/local/bin   # or any other directory already on $PATH
+```
+
+Then:
+
+```bash
+lms-helper ls
+lms-helper outdated --all -y
+lms-helper rm gemma-4-26b-a4b-it@q4_k_m
+lms-helper redownload gemma-4-26b-a4b-it@q4_k_m -y --unload
+```
+
+No pnpm, npm, or corepack involved — just Node 18+. The symlink resolves to this repo's
+real path, so `lms-helper` works from any directory once it's on `$PATH`.
+
+Skipping the install works too — call the scripts directly:
+
+```bash
+node scripts/list-models.mjs
+node scripts/outdated-models.mjs --all -y
+```
+
+(This is also the fallback if pnpm/corepack isn't cooperating — e.g. an older corepack
+that doesn't read `devEngines` yet.)
 
 ## Commands
+
+Each `lms-helper <name>` above is a thin wrapper around one of these — use them directly
+if you're already working inside this repo with pnpm:
 
 ```bash
 pnpm model:ls                       # list models downloaded on THIS machine (size + path)
@@ -54,31 +87,6 @@ to be *derived* from mmproj's current presence, not read from the base GGUF's ow
 architecture — deleting the mmproj file entirely flips `vision` back to `false`, so the
 model silently drops out of this check too. `model:outdated` doesn't have this problem — it
 cross-checks against the upstream repo's actual file listing instead, see below.
-
-### Running without pnpm
-
-Zero dependencies means there's nothing to install — pnpm here is just a task runner, not
-a requirement. If pnpm/corepack isn't cooperating (e.g. an older corepack that doesn't read
-`devEngines` yet), call the scripts directly with `node`:
-
-```bash
-node scripts/list-models.mjs
-node scripts/outdated-models.mjs --all -y
-```
-
-Or link the bundled dispatcher (`bin/lms-helper.mjs`) as a single command on `$PATH`:
-
-```bash
-ln -s "$(pwd)/bin/lms-helper.mjs" ~/bin/lms-helper   # any dir on $PATH works
-
-lms-helper ls
-lms-helper outdated --all -y
-lms-helper rm gemma-4-26b-a4b-it@q4_k_m
-lms-helper redownload gemma-4-26b-a4b-it@q4_k_m -y --unload
-```
-
-The symlink resolves to this repo's real path, so it works from any directory — no pnpm,
-npm, or corepack involved.
 
 ### `model:outdated`
 
