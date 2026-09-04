@@ -31,6 +31,8 @@ own. Pair it with `model:redownload` to actually update.
 pnpm model:outdated              # all models, grouped by status (⬆ update / ✓ up-to-date / ? unknown)
 pnpm model:outdated -u           # only models with an update available
 pnpm model:outdated -i           # interactive: pick outdated models and re-download them
+pnpm model:outdated --all        # re-download every outdated model, no picker
+pnpm model:outdated --all -y     # same, fully unattended (skips the confirmation too)
 pnpm model:outdated --json       # machine-readable
 ```
 
@@ -41,6 +43,10 @@ to cancel — then deletes and re-downloads each selected model, unloading any t
 loaded and fetching the same quant non-interactively. Add `-y` to skip the final
 confirmation. (Sorting survives selection; when stdin isn't a TTY it falls back to numbered
 input.) The `rm` / `redownload` model pickers offer the same UI, sortable by name / size.
+
+**Batch update (`--all`)** skips the picker and re-downloads every model with an update —
+same delete-then-fetch behavior as selecting all in `-i`. Combine with `-y` for a fully
+unattended run (e.g. cron).
 
 ```text
   ⬆ update      gemma-4-26b-a4b-it@q4_k_m Q4_K_M   local 2026-04-10 → HF 2026-07-17
