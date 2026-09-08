@@ -14,6 +14,8 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 // --- tiny ANSI helpers (no dependency) ---
@@ -722,23 +724,199 @@ async function pickManyNumbered(items, render, message) {
   }
 }
 
+// --- direct-from-HF downloads (used when $HF_TOKEN is set — see redownloadModel) ---
+// Bypasses `lms get`/LM Studio's own downloader: fetches the file straight from HF's
+// `resolve/main` endpoint (auth'd with the token, so gated repos work too) and streams it
+// to the final path ourselves. Verified empirically (see plan notes) that LM Studio picks
+// up a file rewritten at an already-indexed path immediately — no follow-up `lms get` needed.
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Build a Hugging Face `resolve/main` URL for a file inside a repo (each segment percent-encoded). */
+export function hfResolveUrl(owner, name, fileRelPath) {
+  const encoded = fileRelPath
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+  return `https://huggingface.co/${owner}/${name}/resolve/main/${encoded}`;
+}
+
+function drawProgress(label, loaded, total) {
+  if (!process.stderr.isTTY) return;
+  const pct = total ? ` (${((loaded / total) * 100).toFixed(1)}%)` : "";
+  const size = total ? `${formatBytes(loaded)} / ${formatBytes(total)}` : formatBytes(loaded);
+  process.stderr.write(`\r\x1b[2K  ${c.dim(`${label ? `${label}: ` : ""}${size}${pct}`)}`);
+}
+
+function clearProgress() {
+  if (process.stderr.isTTY) process.stderr.write("\r\x1b[2K");
+}
+
 /**
- * Force-update one model: (optionally unload), delete its local variant + stale partials,
- * then re-download from the full Hugging Face URL. Does NOT prompt — the caller is
- * responsible for confirmation. Returns { ok, code?, reason?, repoUrl?, quant? }.
+ * Download one file straight from Hugging Face, streaming to `destAbsPath` via a
+ * `downloading_<name>.part` temp file in the same directory — the same naming
+ * `cleanPartials()` already recognizes, so an interrupted attempt is swept automatically
+ * on the next run. The original file at `destAbsPath` (if any) is left untouched until the
+ * new one is fully verified, then replaced with a single atomic rename.
+ *
+ * Retries retryable failures (network errors, timeouts, 5xx, an incomplete stream) up to
+ * `attempts` times with a short backoff; 401/403 (no access) and 404 (not found) fail
+ * immediately. Never throws — returns `{ ok: false, reason, retryable }` so the caller can
+ * fall back to `lms get` cleanly.
+ */
+export async function downloadFileDirect({ url, destAbsPath, token, label, attempts = 3 }) {
+  const dir = path.dirname(destAbsPath);
+  const tmpPath = path.join(dir, `downloading_${path.basename(destAbsPath)}.part`);
+  await fsp.mkdir(dir, { recursive: true });
+  const headers = { "user-agent": "lms-helper" };
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  let lastReason = "unknown error";
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    await fsp.rm(tmpPath, { force: true });
+    const retry = async (reason) => {
+      lastReason = reason;
+      if (attempt >= attempts) return false;
+      process.stderr.write(
+        c.dim(`  ${label ? `${label}: ` : ""}attempt ${attempt}/${attempts} failed (${reason}) — retrying…\n`),
+      );
+      await sleep(attempt * 1000);
+      return true;
+    };
+    try {
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          return { ok: false, reason: `access denied (HTTP ${res.status}) — check $HF_TOKEN has access`, retryable: false };
+        }
+        if (res.status === 404) {
+          return { ok: false, reason: "HTTP 404 (file not found)", retryable: false };
+        }
+        if (await retry(`HTTP ${res.status}`)) continue;
+        break;
+      }
+
+      const total = Number(res.headers.get("content-length")) || null;
+      let loaded = 0;
+      let lastDraw = 0;
+      const tracker = new Transform({
+        transform(chunk, _enc, cb) {
+          loaded += chunk.length;
+          const now = Date.now();
+          if (now - lastDraw > 200) {
+            lastDraw = now;
+            drawProgress(label, loaded, total);
+          }
+          cb(null, chunk);
+        },
+      });
+      await pipeline(Readable.fromWeb(res.body), tracker, fs.createWriteStream(tmpPath));
+      clearProgress();
+
+      const finalSize = total != null ? (await fsp.stat(tmpPath)).size : null;
+      if (total != null && finalSize !== total) {
+        if (await retry(`incomplete download (${finalSize}/${total} bytes)`)) continue;
+        break;
+      }
+
+      await fsp.rename(tmpPath, destAbsPath);
+      return { ok: true, bytes: (await fsp.stat(destAbsPath)).size };
+    } catch (e) {
+      if (await retry(e.message || String(e))) continue;
+      break;
+    }
+  }
+  await fsp.rm(tmpPath, { force: true }).catch(() => {});
+  return { ok: false, reason: lastReason, retryable: true };
+}
+
+/**
+ * Direct-download a model's primary file, plus (for a GGUF vision model) its upstream
+ * mmproj sibling from the same repo directory — refreshing it too, so redownload can heal a
+ * stale or missing mmproj, not just the main weights. mmproj lookup/refresh is best-effort:
+ * a failed sibling listing or mmproj fetch doesn't fail the overall redownload, since the
+ * primary file is already safely in place by that point.
+ *
+ * Starts with a cheap repo-existence check (also reused for the mmproj lookup below, so it
+ * doesn't cost an extra request on top of what mmproj lookup already needed). A path can
+ * *look* like an HF repo (owner/name/file) without actually being one — a self-quantized or
+ * fine-tuned model dropped into the models folder under a path that mimics that shape. A 404
+ * here means the repo doesn't exist at all, so there's no point starting a (guaranteed-404)
+ * file download, or falling back to `lms get` afterward — that would just hit the same
+ * nonexistent URL again. Any other failure (gated 401/403, network hiccup) doesn't short-
+ * circuit — those repos likely DO exist, so the normal download attempt still proceeds.
+ */
+async function directRedownload({ fileAbsPath, fileRelPath, repo, token, model, quant }) {
+  const label = quant ? `${model.modelKey} ${quant.toUpperCase()}` : model.modelKey;
+
+  const info = await hfLastModified(repo.owner, repo.name);
+  if (!info.ok && info.status === 404) {
+    return {
+      ok: false,
+      notOnHf: true,
+      reason:
+        `no such repo on Hugging Face (${repo.owner}/${repo.name}) — looks like a ` +
+        "self-quantized/fine-tuned or manually imported model, not one downloaded from HF",
+      retryable: false,
+    };
+  }
+
+  const primary = await downloadFileDirect({
+    url: hfResolveUrl(repo.owner, repo.name, fileRelPath),
+    destAbsPath: fileAbsPath,
+    token,
+    label,
+  });
+  if (!primary.ok) return primary;
+
+  let mmproj;
+  if (model.format === "gguf" && info.ok) {
+    const repoDir = path.dirname(fileRelPath);
+    const sibling = info.siblings.find((f) => /mmproj/i.test(f) && path.dirname(f) === repoDir);
+    if (sibling) {
+      const existing = scanMmprojNear(fileAbsPath);
+      const destAbsPath = path.join(path.dirname(fileAbsPath), path.basename(sibling));
+      const res = await downloadFileDirect({
+        url: hfResolveUrl(repo.owner, repo.name, sibling),
+        destAbsPath,
+        token,
+        label: `${label} mmproj`,
+      });
+      if (res.ok) {
+        mmproj = path.basename(sibling);
+        if (existing.mmprojPath && existing.mmprojPath !== destAbsPath) {
+          await fsp.rm(existing.mmprojPath, { force: true });
+        }
+      }
+    }
+  }
+  return { ok: true, mmproj };
+}
+
+/**
+ * Force-update one model: (optionally unload), then re-fetch it from Hugging Face. Does NOT
+ * prompt — the caller is responsible for confirmation. Returns
+ * { ok, method?, code?, reason?, repoUrl?, quant?, mmproj? }.
  *
  * @param model  A model object from listDownloadedLocal().
  * @param folder The resolved models folder.
  * @param opts   yes: run fully non-interactively — never open lms's `--select` picker (a failed
  *               exact-quant fetch just reports failure instead of falling back to it);
  *               unload: unload the model first if it is loaded;
- *               keepPartials: skip cleaning leftover download partials.
+ *               keepPartials: skip cleaning leftover download partials (`lms get` fallback only);
+ *               viaLms: force the `lms get` path even when $HF_TOKEN is set.
  *
- * The known quant (`model.quantization.name`) is always re-fetched exactly (`get <url>@<quant>`),
- * so no variant menu appears in the normal path; `--select` is only a fallback (interactive runs).
+ * When $HF_TOKEN is set (and `viaLms` isn't), fetches straight from Hugging Face instead of
+ * shelling out to `lms get` — see the direct-download helpers above. That path downloads to a
+ * temp file and only replaces the original once complete, so it never needs to delete first.
+ * A failed direct attempt falls back to the `lms get` flow below unchanged, which DOES delete
+ * first: `lms get` matches by variant name and skips an already-present quant, so the known
+ * quant (`model.quantization.name`) is only re-fetched exactly (`get <url>@<quant>`) after the
+ * old copy is gone — no variant menu in the normal path; `--select` is only a fallback
+ * (interactive runs).
  */
 export async function redownloadModel(model, folder, opts = {}) {
-  const { yes = false, unload = false, keepPartials = false, index } = opts;
+  const { yes = false, unload = false, keepPartials = false, index, viaLms = false } = opts;
   const { fileAbsPath, repoRelPath, sourceType } = enrichModel(model, folder, index || loadModelIndex());
 
   if (!pathIsAtOrInside(folder, fileAbsPath)) {
@@ -765,6 +943,20 @@ export async function redownloadModel(model, folder, opts = {}) {
     for (const b of blockers) lmsInteractive(["unload", b.identifier]);
   }
 
+  const token = hfToken();
+  if (!viaLms && token) {
+    const segs = String(repoRelPath || "")
+      .split(/[\\/]/)
+      .filter(Boolean);
+    const fileRelPath = segs.length > 2 ? segs.slice(2).join("/") : null;
+    if (fileRelPath) {
+      const direct = await directRedownload({ fileAbsPath, fileRelPath, repo, token, model, quant });
+      if (direct.ok) return { ok: true, method: "hf-direct", repoUrl, quant, mmproj: direct.mmproj };
+      if (direct.notOnHf) return { ok: false, reason: direct.reason };
+      process.stderr.write(c.dim(`  Direct download failed (${direct.reason}) — falling back to \`lms get\`.\n`));
+    }
+  }
+
   await fsp.rm(fileAbsPath, { recursive: true, force: true });
   if (!keepPartials) await cleanPartials(fileAbsPath);
 
@@ -780,5 +972,5 @@ export async function redownloadModel(model, folder, opts = {}) {
   } else {
     return { ok: false, reason: "quant unknown; can't pick non-interactively with -y" };
   }
-  return { ok: code === 0, code, repoUrl, quant };
+  return { ok: code === 0, method: "lms-get", code, repoUrl, quant };
 }

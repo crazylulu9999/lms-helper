@@ -184,6 +184,7 @@ pnpm model:redownload gemma-4-26b-a4b-it@q4_k_m -y --unload   # unattended, same
 | `--unload` | ✓ | ✓ | Unload the model first if it is currently loaded. |
 | `--dry-run` | ✓ | | Show what would be deleted, without deleting. |
 | `--keep-partials` | | ✓ | Don't clean leftover download partials before re-fetching. |
+| `--via-lms` | | ✓ | Force the `lms get` download path even when `$HF_TOKEN` is set. |
 | `-h`, `--help` | ✓ | ✓ | Show help. |
 
 ## Safety model (ported from lms PR #580)
@@ -215,12 +216,44 @@ interactive `--select` picker (skipped under `-y`). It keeps sibling files (conf
 / other quants) intact. To switch to a *different* quant, use `lms get <repo>` directly —
 `redownload` is for in-place same-variant updates.
 
+### Fast path: direct-from-Hugging-Face when `$HF_TOKEN` is set
+
+With a token set, `redownload` (and the `model:outdated -i`/`--all` re-download loop, which
+shares the same code path) skips `lms get` entirely and fetches the file straight from HF's
+`resolve/main` endpoint instead — faster than going through LM Studio's own downloader, and
+gated repos work the same way `model:outdated` already uses the token for. It downloads to a
+temp file next to the target and only replaces the original once the transfer is verified
+complete (byte count checked against `Content-Length`), retrying transient failures (network
+errors, timeouts, 5xx) a few times before giving up; a gated repo the token can't access
+(401/403) or a missing file (404) fails immediately instead of retrying. If the direct
+attempt fails for any reason, it falls back to the normal `lms get` flow above automatically
+— nothing is left half-done either way.
+
+One exception: if the repo itself doesn't exist on Hugging Face at all — a self-quantized
+or fine-tuned model living under a models-folder path that just happens to look like an HF
+repo (`publisher/repo/file.gguf`) — it fails immediately with a message saying so and does
+**not** fall back to `lms get`, since that would just hit the same nonexistent URL again.
+A repo that exists but is merely gated (401/403) still falls back normally.
+
+For a GGUF vision model this path also refreshes the upstream `mmproj` sibling (found via
+the same repo file listing `model:outdated` uses), even though the plain `lms get` path
+above leaves sibling files alone — so `redownload` can heal a stale or corrupted mmproj too,
+not just the main weights. Pass `--via-lms` to opt back into the old `lms get`-only
+behavior (siblings untouched) if you'd rather not.
+
+LM Studio was found (empirically, replacing/adding/removing files under an already-indexed
+model folder while it was running) to pick up a file swapped in place immediately, with no
+need to restart it or run `lms get` afterward. If `lms ls` ever seems to be showing a stale
+size for a model you just updated this way, restarting LM Studio is the fallback fix.
+
 ## Environment
 
 - `LMS_BIN` — path to the `lms` binary (default: `~/.lmstudio/bin/lms`, else `lms` on `PATH`).
 - `LMSTUDIO_HOME` — LM Studio home dir (default: `~/.lmstudio`).
 - `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) — Hugging Face read token, used by
-  `model:outdated` to check gated repos. Never committed (`.env` is gitignored).
+  `model:outdated` to check gated repos, and by `model:redownload` (and `model:outdated
+  -i`/`--all`) to re-download straight from Hugging Face instead of through `lms get` — see
+  "Fast path" above. Never committed (`.env` is gitignored).
 - `NO_COLOR` — disable colored output.
 
 A `.env` file in the project root is auto-loaded on every run (see `.env.example`).
