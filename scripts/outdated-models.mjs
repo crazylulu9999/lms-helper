@@ -47,12 +47,15 @@ Options:
                        (picker: ↑/↓ move · space toggle · a all · s sort · r reverse)
       --all            Re-download every model with an update, no picker.
   -y, --yes            With -i/--all: skip the confirmation before re-downloading.
+      --via-lms        With -i/--all: force the \`lms get\` download path even when
+                       $HF_TOKEN is set (see model:redownload --help).
   -u, --updates-only   Show only models with an update available (or a vision issue).
       --json           Machine-readable JSON output.
   -h, --help           Show this help.
 
 Auth: set $HF_TOKEN (or $HUGGING_FACE_HUB_TOKEN) to check gated repos (Google,
-Nvidia, …); without it they show as "unknown".
+Nvidia, …); without it they show as "unknown". It also makes -i/--all re-download
+straight from Hugging Face instead of through \`lms get\` — see model:redownload --help.
 
 Note: the check is repo-level (any file change bumps lastModified). Models whose
 path is not a Hugging Face repo (LM Studio catalog aliases) show as "unknown".
@@ -222,10 +225,18 @@ async function main() {
       console.error(
         `\n${c.bold("──")} ${c.cyan(m.modelKey)}${m.quantization?.name ? ` ${c.dim(m.quantization.name)}` : ""}`,
       );
-      const res = await redownloadModel(m, folder, { yes: true, unload: true, keepPartials: false, index });
+      const res = await redownloadModel(m, folder, {
+        yes: true,
+        unload: true,
+        keepPartials: false,
+        viaLms: Boolean(flags["via-lms"]),
+        index,
+      });
       if (res.ok) {
         done++;
-        console.error(c.green(`✓ ${m.modelKey} updated.`));
+        const via = res.method === "hf-direct" ? c.dim(" (direct from Hugging Face)") : "";
+        const mmproj = res.mmproj ? c.dim(` · mmproj refreshed (${res.mmproj})`) : "";
+        console.error(c.green(`✓ ${m.modelKey} updated${via}${mmproj}.`));
       } else {
         failed++;
         console.error(c.red(`✗ ${m.modelKey}: ${res.reason || `lms get exit ${res.code}`}`));

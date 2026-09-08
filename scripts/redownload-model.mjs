@@ -38,7 +38,12 @@ Options:
                       quant can't be re-fetched, fail instead of opening lms's variant picker.
       --unload        Unload the model first if it is currently loaded.
       --keep-partials Do not clean leftover download partials before re-fetching.
-  -h, --help          Show this help.`;
+      --via-lms       Force the \`lms get\` download path even when $HF_TOKEN is set.
+  -h, --help          Show this help.
+
+When $HF_TOKEN is set, fetches straight from Hugging Face instead of going through
+\`lms get\`/LM Studio's downloader — faster, and for a GGUF vision model, refreshes its
+mmproj sibling too. Falls back to \`lms get\` automatically if the direct download fails.`;
 
 async function main() {
   const { positionals, flags } = parseArgs(process.argv.slice(2));
@@ -111,17 +116,20 @@ async function main() {
       return;
     }
   }
-  console.error(c.dim("\nStarting `lms get` …"));
+  console.error(c.dim("\nStarting update …"));
 
   const res = await redownloadModel(target, folder, {
     yes: wantsYes(flags),
     unload: Boolean(flags.unload),
     keepPartials: Boolean(flags["keep-partials"]),
+    viaLms: Boolean(flags["via-lms"]),
     index,
   });
 
   if (res.ok) {
-    console.error(c.green("\n✓ Done. Load it with: ") + c.yellow(`lms load ${target.modelKey}`));
+    const via = res.method === "hf-direct" ? c.dim(" (direct from Hugging Face)") : "";
+    const mmproj = res.mmproj ? c.dim(` · mmproj refreshed (${res.mmproj})`) : "";
+    console.error(c.green(`\n✓ Done${via}${mmproj}. Load it with: `) + c.yellow(`lms load ${target.modelKey}`));
   } else if (res.reason) {
     console.error(c.red(`\nFailed: ${res.reason}`));
     process.exitCode = 1;
