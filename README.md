@@ -24,6 +24,11 @@ filesystem — no extra dependencies.
 ./install.sh /usr/local/bin   # or any other directory already on $PATH
 ```
 
+If the install directory isn't on `$PATH` yet, it prints a ready-to-run command that
+appends the right `export PATH=...` line to your shell profile (`~/.zshrc`/`~/.bashrc`,
+picked from `$SHELL`) and reloads it in one go — no separate "now restart your shell"
+step.
+
 Then:
 
 ```bash
@@ -35,6 +40,11 @@ lms-helper redownload gemma-4-26b-a4b-it@q4_k_m -y --unload
 
 No pnpm, npm, or corepack involved — just Node 18+. The symlink resolves to this repo's
 real path, so `lms-helper` works from any directory once it's on `$PATH`.
+
+Each command's `--help` output and follow-up hints (e.g. `model:outdated`'s "update all"
+tip) auto-detect which way you're running it and adapt accordingly — `lms-helper <cmd>`
+examples once installed, `pnpm model:<cmd>` otherwise — so what you see is always
+something you can actually copy-paste.
 
 Skipping the install works too — call the scripts directly:
 

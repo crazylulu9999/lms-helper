@@ -31,11 +31,16 @@ case ":$PATH:" in
     echo "Try it: lms-helper ls"
     ;;
   *)
+    case "$(basename "${SHELL:-}")" in
+      zsh) profile="$HOME/.zshrc" ;;
+      bash) profile="$HOME/.bashrc" ;;
+      *) profile="$HOME/.profile" ;;
+    esac
     echo
-    echo "$dest_dir is not on \$PATH yet. Add this to your shell profile (~/.zshrc, ~/.bashrc, ...):"
+    echo "$dest_dir is not on \$PATH yet. Run this to add it and reload your shell:"
     echo
-    echo "  export PATH=\"$dest_dir:\$PATH\""
+    echo "  echo 'export PATH=\"$dest_dir:\$PATH\"' >> $profile && source $profile"
     echo
-    echo "Then restart your shell (or source the profile) and run: lms-helper ls"
+    echo "Then run: lms-helper ls"
     ;;
 esac

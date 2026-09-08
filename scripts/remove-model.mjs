@@ -18,6 +18,7 @@ import {
   absPathOf,
   c,
   cleanPartials,
+  cmdExample,
   confirm,
   formatBytes,
   listDownloadedLocal,
@@ -35,7 +36,7 @@ import {
 const HELP = `${c.bold("model:rm")} — delete a downloaded LM Studio model from disk
 
 Usage:
-  pnpm model:rm [modelKey] [options]
+  ${cmdExample("rm")} [modelKey] [options]
 
 Arguments:
   modelKey        e.g. "gemma-4-26b-a4b-it@q4_k_m". Omit to pick interactively.

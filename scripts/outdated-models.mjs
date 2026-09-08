@@ -14,6 +14,7 @@
 
 import {
   c,
+  cmdExample,
   confirm,
   enrichModel,
   formatBytes,
@@ -40,7 +41,7 @@ file's mtime. A newer HF timestamp means the upstream repo changed after you
 downloaded (likely re-quantized weights / chat template / tokenizer).
 
 Usage:
-  pnpm model:outdated [options]
+  ${cmdExample("outdated")} [options]
 
 Options:
   -i, --interactive    Pick models with an update and re-download them.
@@ -291,11 +292,11 @@ async function main() {
   if (count("update") > 0) {
     console.error(
       c.dim("Update interactively: ") +
-        c.yellow("pnpm model:outdated -i") +
+        c.yellow(`${cmdExample("outdated")} -i`) +
         c.dim("   ·   update all: ") +
-        c.yellow("pnpm model:outdated --all") +
+        c.yellow(`${cmdExample("outdated")} --all`) +
         c.dim("   ·   one model: ") +
-        c.yellow("pnpm model:redownload <modelKey>"),
+        c.yellow(`${cmdExample("redownload")} <modelKey>`),
     );
   }
   if (count("unknown") > 0 && !hfToken()) {
