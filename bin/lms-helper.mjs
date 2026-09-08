@@ -6,17 +6,25 @@
 // Node resolves the symlink to its real path, so the relative import below
 // keeps working no matter where it's linked from.
 
+import { c } from "../scripts/lib/lms.mjs";
+
 const [, , cmd, ...rest] = process.argv;
 
 const COMMANDS = {
-  ls: "list-models.mjs",
-  outdated: "outdated-models.mjs",
-  rm: "remove-model.mjs",
-  redownload: "redownload-model.mjs",
+  ls: { file: "list-models.mjs", desc: "List downloaded models (size, path, vision/mmproj check)" },
+  outdated: { file: "outdated-models.mjs", desc: "List models with an update available upstream" },
+  rm: { file: "remove-model.mjs", desc: "Delete a downloaded model from disk" },
+  redownload: { file: "redownload-model.mjs", desc: "Delete then re-download a model (force-update)" },
 };
 
 function usage() {
-  console.error(`Usage: lms-helper <${Object.keys(COMMANDS).join("|")}> [...args]`);
+  console.error(`Usage: ${c.bold("lms-helper")} <command> [...args]\n`);
+  console.error("Commands:");
+  const width = Math.max(...Object.keys(COMMANDS).map((k) => k.length));
+  for (const [name, { desc }] of Object.entries(COMMANDS)) {
+    console.error(`  ${c.cyan(name.padEnd(width))}  ${c.dim(desc)}`);
+  }
+  console.error(`\nRun \`lms-helper <command> --help\` for options.`);
 }
 
 if (!cmd || cmd === "-h" || cmd === "--help") {
@@ -24,7 +32,7 @@ if (!cmd || cmd === "-h" || cmd === "--help") {
   process.exit(cmd ? 0 : 1);
 }
 
-const target = COMMANDS[cmd];
+const target = COMMANDS[cmd]?.file;
 if (!target) {
   console.error(`Unknown command "${cmd}".\n`);
   usage();

@@ -10,6 +10,7 @@
 
 import {
   c,
+  cmdExample,
   confirm,
   enrichModel,
   formatBytes,
@@ -28,7 +29,7 @@ import {
 const HELP = `${c.bold("model:redownload")} — delete then re-download a model (force-update)
 
 Usage:
-  pnpm model:redownload [modelKey] [options]
+  ${cmdExample("redownload")} [modelKey] [options]
 
 Arguments:
   modelKey            e.g. "gemma-4-26b-a4b-it@q4_k_m". Omit to pick interactively.

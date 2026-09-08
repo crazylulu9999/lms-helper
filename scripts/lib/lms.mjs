@@ -265,6 +265,23 @@ export function parseArgs(argv) {
 
 export const wantsYes = (flags) => Boolean(flags.y || flags.yes);
 
+/**
+ * True when running through the installed `lms-helper` dispatcher (bin/lms-helper.mjs) —
+ * it loads each subcommand via dynamic `import()` without touching `process.argv[1]`, so
+ * that stays the dispatcher's own path (the symlink name "lms-helper", or "lms-helper.mjs"
+ * running it unsymlinked). A `pnpm model:*` script (or a raw `node scripts/*.mjs` run) can
+ * never end up with that basename, since argv[1] there is always the script's own file.
+ */
+export function invokedViaLmsHelper() {
+  const argv1 = path.basename(process.argv[1] || "");
+  return argv1 === "lms-helper" || argv1 === "lms-helper.mjs";
+}
+
+/** The user-facing command to show in help/hint text for a subcommand. */
+export function cmdExample(sub) {
+  return invokedViaLmsHelper() ? `lms-helper ${sub}` : `pnpm model:${sub}`;
+}
+
 // --- interactive prompts (rendered on stderr so stdout stays clean) ---
 export async function confirm(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
