@@ -106,12 +106,21 @@ file's mtime; a newer HF timestamp means the upstream repo changed after you dow
 own. Pair it with `model:redownload` to actually update.
 
 ```bash
-pnpm model:outdated              # all models, grouped by status (⬆ update / ✓ up-to-date / ? unknown)
-pnpm model:outdated -u           # only models with an update available
+pnpm model:outdated              # only models with an update available (or a ⚠ vision issue)
+pnpm model:outdated -v           # every model, grouped by status (⬆ update / ✓ up-to-date / ? unknown)
 pnpm model:outdated -i           # interactive: pick outdated models and re-download them
 pnpm model:outdated --all        # re-download every outdated model, no picker
 pnpm model:outdated --all -y     # same, fully unattended (skips the confirmation too)
-pnpm model:outdated --json       # machine-readable
+pnpm model:outdated --json       # machine-readable (same filter; add -v for every model)
+```
+
+The top of the output shows whether a Hugging Face token is in effect, where it came from,
+and whether HF accepted it — so it's obvious which download route `-i`/`--all` will take:
+
+```text
+HF_TOKEN: ✓ applied (from .env, user: you) — downloads go direct from Hugging Face
+HF_TOKEN: ✗ rejected by Hugging Face (HTTP 401, from shell env) — downloads use `lms get`
+HF_TOKEN: – not set — gated repos show as unknown; downloads use `lms get`
 ```
 
 **Interactive update (`-i`)** lists the models with an update as an arrow-key checkbox
@@ -128,10 +137,10 @@ unattended run (e.g. cron).
 
 ```text
   ⬆ update      gemma-4-26b-a4b-it@q4_k_m Q4_K_M   local 2026-04-10 → HF 2026-07-17
-  ✓ up-to-date  gemma-4-26b-a4b-it@q4_k_xl Q4_K_XL   local 2026-07-21 → HF 2026-07-17
-  ? unknown     llama-guard-3-8b-mlx 4bit   local 2026-04-10 → HF —  (imported locally (not on HF))
+  ⬆ update      qwen3.8-27b@4bit 4bit   local 2026-07-02 → HF 2026-07-15
 
-  16 update(s) available · 11 up-to-date · 1 unknown
+2 update(s) available · 27 up-to-date · 1 unknown
+28 not shown — list everything with lms-helper outdated -v
 ```
 
 The check is repo-level (any file change bumps `lastModified`). **Hub-aliased** models
@@ -154,9 +163,9 @@ that's flagged the same way `model:ls` does:
 
 Unlike `model:ls`, this doesn't depend on LM Studio's local `vision` flag, so it also
 catches an mmproj deleted entirely (not just corrupted) — at the cost of needing network
-access. Also exits non-zero, so `-u` surfaces affected models even when otherwise
-up-to-date, and it's usable as the same kind of deploy-verification gate
-(`pnpm model:outdated -u || alert`). GGUF only.
+access. Affected models are always listed (even when otherwise up-to-date), and the command
+exits non-zero, so it's usable as the same kind of deploy-verification gate
+(`pnpm model:outdated || alert`). GGUF only.
 
 Set a Hugging Face read token to check gated repos — either export it, or drop it in a
 `.env` (auto-loaded, gitignored):
@@ -229,8 +238,10 @@ interactive `--select` picker (skipped under `-y`). It keeps sibling files (conf
 ### Fast path: direct-from-Hugging-Face when `$HF_TOKEN` is set
 
 With a token set, `redownload` (and the `model:outdated -i`/`--all` re-download loop, which
-shares the same code path) skips `lms get` entirely and fetches the file straight from HF's
-`resolve/main` endpoint instead — faster than going through LM Studio's own downloader, and
+shares the same code path) skips `lms get` entirely and fetches the file(s) straight from HF's
+`resolve/main` endpoint instead — a single `.gguf` for GGUF models, every model file in the
+repo (weights, config, tokenizer, …; README/`.gitattributes`/images are skipped) for
+MLX/safetensors directory models — faster than going through LM Studio's own downloader, and
 gated repos work the same way `model:outdated` already uses the token for. It downloads to a
 temp file next to the target and only replaces the original once the transfer is verified
 complete (byte count checked against `Content-Length`), retrying transient failures (network
@@ -238,6 +249,14 @@ errors, timeouts, 5xx) a few times before giving up; a gated repo the token can'
 (401/403) or a missing file (404) fails immediately instead of retrying. If the direct
 attempt fails for any reason, it falls back to the normal `lms get` flow above automatically
 — nothing is left half-done either way.
+
+Which route is used is never silent: before the confirmation, `redownload` prints a `Via:`
+line (`Hugging Face direct` / `lms get (<reason>)` — no token, token rejected by HF,
+`--via-lms`, …) and an `Auth:` line saying whether the token was applied and where it came
+from (`.env` or the shell). The token is checked against HF once per run; a rejected token
+skips the direct attempt instead of failing into the fallback. For a directory model, a
+failed file makes the `lms get` fallback re-fetch the whole directory; after a successful
+direct refresh, weight files the repo no longer ships (e.g. after a re-shard) are removed.
 
 One exception: if the repo itself doesn't exist on Hugging Face at all — a self-quantized
 or fine-tuned model living under a models-folder path that just happens to look like an HF

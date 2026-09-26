@@ -16,6 +16,7 @@ import {
   c,
   cmdExample,
   confirm,
+  describeHfAuth,
   enrichModel,
   formatBytes,
   hfLastModified,
@@ -50,13 +51,16 @@ Options:
   -y, --yes            With -i/--all: skip the confirmation before re-downloading.
       --via-lms        With -i/--all: force the \`lms get\` download path even when
                        $HF_TOKEN is set (see model:redownload --help).
-  -u, --updates-only   Show only models with an update available (or a vision issue).
-      --json           Machine-readable JSON output.
+  -v, --verbose        Also list up-to-date and unknown models (default: only models
+                       with an update available or a vision issue).
+      --json           Machine-readable JSON output (same filter; add -v for all).
   -h, --help           Show this help.
 
 Auth: set $HF_TOKEN (or $HUGGING_FACE_HUB_TOKEN) to check gated repos (Google,
 Nvidia, …); without it they show as "unknown". It also makes -i/--all re-download
-straight from Hugging Face instead of through \`lms get\` — see model:redownload --help.
+straight from Hugging Face instead of through \`lms get\` (GGUF and MLX alike) — see
+model:redownload --help. Whether the token is applied (and where it came from) is shown
+at the top of the output.
 
 Note: the check is repo-level (any file change bumps lastModified). Models whose
 path is not a Hugging Face repo (LM Studio catalog aliases) show as "unknown".
@@ -149,10 +153,14 @@ async function main() {
   const brokenVision = rows.filter((r) => r.visionIssue).length;
   if (brokenVision > 0) process.exitCode = 1;
 
+  // Default view: only what needs attention. `-u` is still accepted (it was the opt-in before).
+  const verbose = Boolean(flags.v || flags.verbose);
+  const needsAttention = (r) => r.status === "update" || r.visionIssue;
+
   if (flags.json) {
     console.log(
       JSON.stringify(
-        rows.map((r) => ({
+        rows.filter((r) => verbose || needsAttention(r)).map((r) => ({
           modelKey: r.model.modelKey,
           quant: r.model.quantization?.name || null,
           repo: r.repo,
@@ -213,6 +221,7 @@ async function main() {
       `\n${c.bold(`${chosen.length} model(s) selected`)} · ${formatBytes(total)} will be deleted and re-downloaded.`,
     );
     console.error(c.dim("Any that are currently loaded will be unloaded first."));
+    console.error(await describeHfAuth({ viaLms: Boolean(flags["via-lms"]) }));
     if (!wantsYes(flags)) {
       const ok = await confirm(c.yellow("Proceed?"));
       if (!ok) {
@@ -235,7 +244,7 @@ async function main() {
       });
       if (res.ok) {
         done++;
-        const via = res.method === "hf-direct" ? c.dim(" (direct from Hugging Face)") : "";
+        const via = res.method === "hf-direct" ? c.dim(" (direct from Hugging Face)") : c.dim(" (via lms get)");
         const mmproj = res.mmproj ? c.dim(` · mmproj refreshed (${res.mmproj})`) : "";
         console.error(c.green(`✓ ${m.modelKey} updated${via}${mmproj}.`));
       } else {
@@ -257,12 +266,10 @@ async function main() {
       (b.remote?.getTime() || 0) - (a.remote?.getTime() || 0),
   );
 
-  const onlyUpdates = Boolean(flags.u || flags.updates || flags["updates-only"]);
-  const shown = onlyUpdates ? rows.filter((r) => r.status === "update" || r.visionIssue) : rows;
+  const shown = verbose ? rows : rows.filter(needsAttention);
 
-  console.error(
-    c.dim(`Models folder: ${folder}  ·  comparing HF repo lastModified vs local mtime\n`),
-  );
+  console.error(c.dim(`Models folder: ${folder}  ·  comparing HF repo lastModified vs local mtime`));
+  console.error(`${await describeHfAuth()}\n`);
   for (const r of shown) {
     const q = r.model.quantization?.name ? ` ${c.dim(r.model.quantization.name)}` : "";
     const dates = `${c.dim("local")} ${ymd(r.local)} ${c.dim("→ HF")} ${ymd(r.remote)}`;
@@ -272,7 +279,7 @@ async function main() {
       console.log(c.yellow(`    ⚠ vision model, ${r.visionIssue} — won't load ("Failed to load CLIP model")`));
     }
   }
-  if (onlyUpdates && shown.length === 0) {
+  if (shown.length === 0) {
     console.log(c.green("  All models are up to date. 🎉"));
   }
 
@@ -282,6 +289,9 @@ async function main() {
       `${c.green(`${count("ok")} up-to-date`)} · ` +
       `${c.dim(`${count("unknown")} unknown`)}`,
   );
+  if (!verbose && shown.length < rows.length) {
+    console.error(c.dim(`${rows.length - shown.length} not shown — list everything with `) + c.yellow(`${cmdExample("outdated")} -v`));
+  }
   if (brokenVision > 0) {
     console.error(
       c.yellow(
