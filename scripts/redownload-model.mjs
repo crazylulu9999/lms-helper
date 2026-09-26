@@ -12,6 +12,8 @@ import {
   c,
   cmdExample,
   confirm,
+  describeHfAuth,
+  downloadRoute,
   enrichModel,
   formatBytes,
   hfRepoFromPath,
@@ -43,8 +45,10 @@ Options:
   -h, --help          Show this help.
 
 When $HF_TOKEN is set, fetches straight from Hugging Face instead of going through
-\`lms get\`/LM Studio's downloader — faster, and for a GGUF vision model, refreshes its
-mmproj sibling too. Falls back to \`lms get\` automatically if the direct download fails.`;
+\`lms get\`/LM Studio's downloader — faster; works for GGUF (single file; a vision model's
+mmproj sibling is refreshed too) and MLX/safetensors (every model file in the repo). Falls
+back to \`lms get\` automatically if the direct download fails. The \`Via:\` line before the
+confirmation shows which route will be used, and whether the token was applied.`;
 
 async function main() {
   const { positionals, flags } = parseArgs(process.argv.slice(2));
@@ -109,6 +113,14 @@ async function main() {
   );
   console.error(`${c.dim("Delete:  ")} ${fileAbsPath} ${c.dim(`(${formatBytes(target.sizeBytes)})`)}`);
   console.error(`${c.dim("Re-get:  ")} ${repoUrl}`);
+  const route = await downloadRoute({ repoRelPath, fileAbsPath, viaLms: Boolean(flags["via-lms"]) });
+  console.error(
+    `${c.dim("Via:     ")} ` +
+      (route.direct
+        ? c.green(`Hugging Face direct${route.kind === "dir" ? " (all model files)" : ""}`)
+        : c.yellow(`lms get (${route.reason})`)),
+  );
+  console.error(`${c.dim("Auth:    ")} ${await describeHfAuth({ viaLms: Boolean(flags["via-lms"]) })}`);
 
   if (!wantsYes(flags)) {
     const ok = await confirm(c.yellow("\nDelete the local copy and re-download from Hugging Face?"));
@@ -128,7 +140,7 @@ async function main() {
   });
 
   if (res.ok) {
-    const via = res.method === "hf-direct" ? c.dim(" (direct from Hugging Face)") : "";
+    const via = res.method === "hf-direct" ? c.dim(" (direct from Hugging Face)") : c.dim(" (via lms get)");
     const mmproj = res.mmproj ? c.dim(` · mmproj refreshed (${res.mmproj})`) : "";
     console.error(c.green(`\n✓ Done${via}${mmproj}. Load it with: `) + c.yellow(`lms load ${target.modelKey}`));
   } else if (res.reason) {

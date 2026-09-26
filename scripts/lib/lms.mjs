@@ -36,6 +36,9 @@ function projectRoot() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
+/** Keys that loadDotEnv() actually injected (i.e. weren't already set in the shell). */
+const dotenvKeys = new Set();
+
 /**
  * Load KEY=VALUE pairs from a .env file into process.env WITHOUT overriding variables
  * that are already set (real env always wins). Supports blank lines, `#` comments,
@@ -64,7 +67,10 @@ export function loadDotEnv(file) {
     if (value.length >= 2 && (q === '"' || q === "'") && value.at(-1) === q) {
       value = value.slice(1, -1);
     }
-    if (!(key in process.env)) process.env[key] = value;
+    if (!(key in process.env)) {
+      process.env[key] = value;
+      dotenvKeys.add(key);
+    }
   }
 }
 
@@ -621,9 +627,85 @@ export function repoHasMmproj(siblings) {
   return Array.isArray(siblings) && siblings.some((f) => /mmproj/i.test(f));
 }
 
+const HF_TOKEN_VARS = ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_API_TOKEN"];
+
+/**
+ * Which Hugging Face token is in effect and where it came from: `{ token, varName, source }`,
+ * where `source` is ".env" (injected by loadDotEnv), "shell" (already in the environment), or
+ * null when no token is set.
+ */
+export function hfTokenInfo() {
+  for (const varName of HF_TOKEN_VARS) {
+    const token = process.env[varName];
+    if (token) return { token, varName, source: dotenvKeys.has(varName) ? ".env" : "shell" };
+  }
+  return { token: "", varName: null, source: null };
+}
+
 /** A Hugging Face access token from the environment, if set (used for gated repos). */
 export function hfToken() {
-  return process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN || process.env.HF_API_TOKEN || "";
+  return hfTokenInfo().token;
+}
+
+/** Validate a token against HF's whoami endpoint: `{ ok, user }` or `{ ok: false, status?, error? }`. */
+export async function hfWhoami(token) {
+  try {
+    const res = await fetch("https://huggingface.co/api/whoami-v2", {
+      headers: { "user-agent": "lms-helper", authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return { ok: false, status: res.status };
+    const json = await res.json();
+    return { ok: true, user: json?.name || null };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
+let hfAuthPromise;
+/**
+ * Resolve (once per process) whether the HF token is usable:
+ * `{ state: "applied" | "rejected" | "unverified" | "unset", varName, source, user?, status?, error? }`.
+ * "unverified" = whoami couldn't be reached (network) — the token is still used.
+ */
+export function hfAuth() {
+  hfAuthPromise ??= (async () => {
+    const { token, varName, source } = hfTokenInfo();
+    if (!token) return { state: "unset", varName: "HF_TOKEN", source: null };
+    const who = await hfWhoami(token);
+    if (who.ok) return { state: "applied", varName, source, user: who.user };
+    if (who.status === 401 || who.status === 403) return { state: "rejected", varName, source, status: who.status };
+    return { state: "unverified", varName, source, status: who.status, error: who.error };
+  })();
+  return hfAuthPromise;
+}
+
+/** True when direct-from-HF downloads should be attempted for this auth state. */
+export function hfDirectUsable(auth) {
+  return auth.state === "applied" || auth.state === "unverified";
+}
+
+/**
+ * One-line, human-readable HF token status (never includes the token itself).
+ * @param opts viaLms: downloads are forced through `lms get` regardless of the token.
+ */
+export async function describeHfAuth(opts = {}) {
+  const a = await hfAuth();
+  const origin = a.source ? `from ${a.source === ".env" ? ".env" : "shell env"}` : "";
+  const name = c.bold(a.varName);
+  if (a.state === "unset") {
+    return `${name}: ${c.dim("– not set")} ${c.dim("— gated repos show as unknown; downloads use `lms get`")}`;
+  }
+  if (a.state === "rejected") {
+    return (
+      `${name}: ${c.red(`✗ rejected by Hugging Face (HTTP ${a.status}, ${origin})`)} ` +
+      c.dim("— downloads use `lms get`")
+    );
+  }
+  const who = a.state === "applied" ? `, user: ${a.user || "?"}` : ", not verified — whoami unreachable";
+  const tail = opts.viaLms
+    ? c.dim("— ignored for downloads (--via-lms)")
+    : c.dim("— downloads go direct from Hugging Face");
+  return `${name}: ${c.green(`✓ applied (${origin}${who})`)} ${tail}`;
 }
 
 /**
@@ -742,9 +824,10 @@ async function pickManyNumbered(items, render, message) {
 }
 
 // --- direct-from-HF downloads (used when $HF_TOKEN is set — see redownloadModel) ---
-// Bypasses `lms get`/LM Studio's own downloader: fetches the file straight from HF's
-// `resolve/main` endpoint (auth'd with the token, so gated repos work too) and streams it
-// to the final path ourselves. Verified empirically (see plan notes) that LM Studio picks
+// Bypasses `lms get`/LM Studio's own downloader: fetches the file(s) straight from HF's
+// `resolve/main` endpoint (auth'd with the token, so gated repos work too) and streams them
+// to the final path ourselves. Covers both single-file models (GGUF) and directory models
+// (MLX/safetensors — every model file in the repo). Verified empirically (see plan notes) that LM Studio picks
 // up a file rewritten at an already-indexed path immediately — no follow-up `lms get` needed.
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -910,6 +993,85 @@ async function directRedownload({ fileAbsPath, fileRelPath, repo, token, model, 
   return { ok: true, mmproj };
 }
 
+// Repo files LM Studio doesn't pull for a directory model (docs, repo metadata, images).
+const NON_MODEL_FILE = /(^|\/)\.gitattributes$|\.md$|\.(png|jpe?g|gif|webp|svg)$/i;
+// Weight files that are safe to prune when upstream no longer ships them (e.g. re-sharded).
+const WEIGHT_FILE = /\.(safetensors|npz|bin)$/i;
+
+/**
+ * Direct-download a directory model (MLX/safetensors): every model file in the repo is fetched
+ * into `dirAbsPath` via downloadFileDirect (each one temp-file → atomic rename). Any failure
+ * returns `{ ok: false }` so the caller's `lms get` fallback — which deletes the directory
+ * first — cleans up a half-refreshed directory. After success, local weight files that the
+ * repo no longer ships (a changed shard count) are pruned; nothing else local is touched.
+ */
+async function directRedownloadDir({ dirAbsPath, repo, token, model }) {
+  const info = await hfLastModified(repo.owner, repo.name);
+  if (!info.ok) {
+    if (info.status === 404) {
+      return {
+        ok: false,
+        notOnHf: true,
+        reason:
+          `no such repo on Hugging Face (${repo.owner}/${repo.name}) — looks like a ` +
+          "self-quantized/fine-tuned or manually imported model, not one downloaded from HF",
+        retryable: false,
+      };
+    }
+    return { ok: false, reason: `can't list repo files (${info.status ? `HTTP ${info.status}` : info.error})` };
+  }
+  const files = info.siblings.filter((f) => !NON_MODEL_FILE.test(f));
+  if (files.length === 0) return { ok: false, reason: "repo lists no model files" };
+
+  for (const [i, f] of files.entries()) {
+    const res = await downloadFileDirect({
+      url: hfResolveUrl(repo.owner, repo.name, f),
+      destAbsPath: path.join(dirAbsPath, ...f.split("/")),
+      token,
+      label: `${model.modelKey} (${i + 1}/${files.length}) ${f}`,
+    });
+    if (!res.ok) return { ok: false, reason: `${f}: ${res.reason}`, retryable: res.retryable };
+  }
+
+  const wanted = new Set(files);
+  let entries = [];
+  try {
+    entries = await fsp.readdir(dirAbsPath, { withFileTypes: true });
+  } catch {
+    // directory unreadable — nothing to prune
+  }
+  for (const e of entries) {
+    if (e.isFile() && WEIGHT_FILE.test(e.name) && !wanted.has(e.name)) {
+      await fsp.rm(path.join(dirAbsPath, e.name), { force: true });
+    }
+  }
+  return { ok: true, files: files.length };
+}
+
+/**
+ * Decide how a model would be re-downloaded: `{ direct, kind, fileRelPath?, reason? }`.
+ * `direct` means straight from Hugging Face (`kind` "file" or "dir"); otherwise `reason` says
+ * why it goes through `lms get` instead. Never prints — callers show it.
+ */
+export async function downloadRoute({ repoRelPath, fileAbsPath, viaLms = false }) {
+  if (viaLms) return { direct: false, reason: "--via-lms" };
+  const auth = await hfAuth();
+  if (auth.state === "unset") return { direct: false, reason: "no $HF_TOKEN" };
+  if (!hfDirectUsable(auth)) return { direct: false, reason: `$${auth.varName} rejected (HTTP ${auth.status})` };
+  const segs = String(repoRelPath || "")
+    .split(/[\\/]/)
+    .filter(Boolean);
+  if (segs.length > 2) return { direct: true, kind: "file", fileRelPath: segs.slice(2).join("/") };
+  let isDir = false;
+  try {
+    isDir = fs.statSync(fileAbsPath).isDirectory();
+  } catch {
+    // missing locally — can't tell which files make up the model
+  }
+  if (segs.length === 2 && isDir) return { direct: true, kind: "dir" };
+  return { direct: false, reason: "can't tell which repo file(s) make up this model" };
+}
+
 /**
  * Force-update one model: (optionally unload), then re-fetch it from Hugging Face. Does NOT
  * prompt — the caller is responsible for confirmation. Returns
@@ -923,9 +1085,11 @@ async function directRedownload({ fileAbsPath, fileRelPath, repo, token, model, 
  *               keepPartials: skip cleaning leftover download partials (`lms get` fallback only);
  *               viaLms: force the `lms get` path even when $HF_TOKEN is set.
  *
- * When $HF_TOKEN is set (and `viaLms` isn't), fetches straight from Hugging Face instead of
- * shelling out to `lms get` — see the direct-download helpers above. That path downloads to a
- * temp file and only replaces the original once complete, so it never needs to delete first.
+ * When $HF_TOKEN is set and accepted by HF (and `viaLms` isn't), fetches straight from Hugging
+ * Face instead of shelling out to `lms get` — a single file for GGUF, every model file of the
+ * repo for a directory (MLX) model; see the direct-download helpers above. That path downloads
+ * to temp files and only replaces originals once complete, so it never needs to delete first.
+ * The route taken (and why, when it's `lms get`) is always printed.
  * A failed direct attempt falls back to the `lms get` flow below unchanged, which DOES delete
  * first: `lms get` matches by variant name and skips an already-present quant, so the known
  * quant (`model.quantization.name`) is only re-fetched exactly (`get <url>@<quant>`) after the
@@ -960,18 +1124,21 @@ export async function redownloadModel(model, folder, opts = {}) {
     for (const b of blockers) lmsInteractive(["unload", b.identifier]);
   }
 
-  const token = hfToken();
-  if (!viaLms && token) {
-    const segs = String(repoRelPath || "")
-      .split(/[\\/]/)
-      .filter(Boolean);
-    const fileRelPath = segs.length > 2 ? segs.slice(2).join("/") : null;
-    if (fileRelPath) {
-      const direct = await directRedownload({ fileAbsPath, fileRelPath, repo, token, model, quant });
-      if (direct.ok) return { ok: true, method: "hf-direct", repoUrl, quant, mmproj: direct.mmproj };
-      if (direct.notOnHf) return { ok: false, reason: direct.reason };
-      process.stderr.write(c.dim(`  Direct download failed (${direct.reason}) — falling back to \`lms get\`.\n`));
+  const route = await downloadRoute({ repoRelPath, fileAbsPath, viaLms });
+  if (route.direct) {
+    process.stderr.write(c.dim(`  ↓ direct from Hugging Face (${repo.owner}/${repo.name})\n`));
+    const token = hfToken();
+    const direct =
+      route.kind === "file"
+        ? await directRedownload({ fileAbsPath, fileRelPath: route.fileRelPath, repo, token, model, quant })
+        : await directRedownloadDir({ dirAbsPath: fileAbsPath, repo, token, model });
+    if (direct.ok) {
+      return { ok: true, method: "hf-direct", repoUrl, quant, mmproj: direct.mmproj, files: direct.files };
     }
+    if (direct.notOnHf) return { ok: false, reason: direct.reason };
+    process.stderr.write(c.yellow(`  Direct download failed (${direct.reason}) — falling back to \`lms get\`.\n`));
+  } else {
+    process.stderr.write(c.dim(`  ↓ lms get (${route.reason})\n`));
   }
 
   await fsp.rm(fileAbsPath, { recursive: true, force: true });
